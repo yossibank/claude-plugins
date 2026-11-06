@@ -1,7 +1,7 @@
 import type { Register } from 'claude-code'
 
 const CREATE = new RegExp(['\\bgh', 'pr', 'create\\b'].join('\\s+'))
-const PR_URL = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/
+const PR_URL = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/g
 const NARROW_COLUMNS = 128
 
 export const register: Register = on => {
@@ -16,7 +16,7 @@ export const register: Register = on => {
     const ran = await next(e)
     if (ran.deny !== undefined || ran.isError === true || !CREATE.test(e.command)) return ran
 
-    const url = ran.text?.match(PR_URL)?.[0]
+    const url = ran.text?.match(PR_URL)?.at(-1)
     if (url === undefined) return ran
 
     const split = columns !== undefined && columns < NARROW_COLUMNS ? 'down' : 'right'
