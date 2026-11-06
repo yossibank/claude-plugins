@@ -8,7 +8,7 @@
 
 | プラグイン | できること |
 | --- | --- |
-| まだ無い | |
+| [pr-browser](plugins/pr-browser) | `gh pr create` で PR を作ったら、その PR のページを [terminal-browser](https://github.com/zenbu-labs/terminal-browser) で右に開く。terminal-browser を `brew install terminal-browser` で入れておく |
 
 ## 🚀 入れ方
 

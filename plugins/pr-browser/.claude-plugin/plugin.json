@@ -1,0 +1,5 @@
+{
+  "name": "pr-browser",
+  "version": "0.1.0",
+  "description": "gh pr create で PR を作ったら、terminal-browser で PR のページを右に開く"
+}
