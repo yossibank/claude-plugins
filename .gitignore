@@ -1,3 +1,4 @@
 .claude/handoff.md
 .DS_Store
 node_modules/
+plugins/*/.claude-plugin/types/
