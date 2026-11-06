@@ -4,5 +4,11 @@
   "owner": {
     "name": "yossibank"
   },
-  "plugins": []
+  "plugins": [
+    {
+      "name": "pr-browser",
+      "source": "./plugins/pr-browser",
+      "description": "gh pr create で PR を作ったら、terminal-browser で PR のページを右に開く"
+    }
+  ]
 }
