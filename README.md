@@ -1,30 +1,33 @@
 # claude-plugins
 
-自作の Claude Code のプラグインと mod を置くマーケットプレイス。全リポジトリ共通の決まりは [claude-config](https://github.com/yossibank/claude-config) にある。
+自作の Claude Code のプラグインと mod を置くマーケットプレイス。
 
-![Claude Code](https://img.shields.io/badge/Claude_Code-D97757?logo=claude&logoColor=white)
+<img src="docs/images/tech.svg" alt="Claude Code">
 
-## 🚀 入れ方
-
-Claude Code で、マーケットプレイスを足してからプラグインを入れる。
-
-```text
-/plugin marketplace add yossibank/claude-plugins
-/plugin install <プラグイン>@yossibank
-```
-
-入れた後は `/reload-plugins` で読み込む。
-
-## 📦 プラグイン
+## ✨ 機能
 
 | プラグイン | できること |
 | --- | --- |
 | まだ無い | |
 
+## 🚀 入れ方
+
+```text
+# マーケットプレイスを足す
+/plugin marketplace add yossibank/claude-plugins
+# プラグインを入れて、読み込む
+/plugin install <プラグイン>@yossibank
+/reload-plugins
+```
+
+## 📚 文書
+
+| 知りたいこと | 文書 |
+| --- | --- |
+| 全リポジトリ共通の決まり | [claude-config](https://github.com/yossibank/claude-config) |
+
 ## 🛠️ 足し方
 
-プラグインは `plugins/<名前>/` に置き、`.claude-plugin/marketplace.json` の `plugins` に足す。足したら次で検査する。
-
-```sh
-claude plugin validate .
-```
+1. `plugins/<名前>/` にプラグインを置く。
+2. `.claude-plugin/marketplace.json` の `plugins` に足す。
+3. `claude plugin validate .` で検査する。
