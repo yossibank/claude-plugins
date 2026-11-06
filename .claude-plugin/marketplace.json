@@ -1,0 +1,8 @@
+{
+  "name": "yossibank",
+  "description": "yossibank の自作の Claude Code のプラグインと mod",
+  "owner": {
+    "name": "yossibank"
+  },
+  "plugins": []
+}
