@@ -9,6 +9,9 @@
 | プラグイン | できること |
 | --- | --- |
 | [pr-browser](plugins/pr-browser) | `gh pr create` で PR を作ったら、その PR のページを [terminal-browser](https://github.com/zenbu-labs/terminal-browser) で右に開く。会話が 128 列より狭い時は下に開く。terminal-browser を `brew install terminal-browser` で入れておく |
+| [snapshot-gallery](plugins/snapshot-gallery) | `make snapshot` で描いた PNG を、直す前と後で左右に並べて pane に出す。`/snapshots <セット>` で開き、`j` と `k` で前と次に移る |
+| [context-gauge](plugins/context-gauge) | 文脈の埋まり具合を、種類ごとに色分けした棒で右の pane に出す。pane を閉じている間は入力欄の上に出し、`/clear` の頃合いを知らせる |
+| [test-progress](plugins/test-progress) | `make test` の間、進みの棒と落ちたテストを入力欄の上に出す。`make test` の出力を `.build/test.log` に残しておく |
 
 ## 🚀 入れ方
 
