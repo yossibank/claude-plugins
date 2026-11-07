@@ -1,607 +1,25 @@
-import { atom, read, update } from 'claude-code'
-import type { EngineInterface, PluginOptions, Register, Timer } from 'claude-code'
+import type { Register, Timer } from 'claude-code'
 
-import type { Activity, Claude, Fill, Limit, Phase, Repo, Stats, TaskItem, Tasks, Touched, Upcoming } from '../types'
+import type { Phase } from '../types'
 
-const NEXT_LINE = /^\s*[-*]\s*次[：:]\s*(.*)$/
-const NEXT_ITEM = /(?:^|\s)\d+[.．]\s+/
-// pane は Tokyo Night、帯は Tokyo Night Moon の色
-const TN = {
-  fg: '#c0caf5',
-  fgDark: '#a9b1d6',
-  comment: '#565f89',
-  line: '#3b4261',
-  bgHighlight: '#292e42',
-  blue: '#7aa2f7',
-  cyan: '#7dcfff',
-  magenta: '#bb9af7',
-  green: '#9ece6a',
-  orange: '#ff9e64',
-  red: '#f7768e',
-  yellow: '#e0af68',
-  teal: '#73daca',
-}
-const MOON = {
-  fg: '#c8d3f5',
-  comment: '#636da6',
-  blue: '#82aaff',
-  cyan: '#86e1fc',
-  magenta: '#c099ff',
-  green: '#c3e88d',
-  orange: '#ff966c',
-  red: '#ff757f',
-  yellow: '#ffc777',
-  teal: '#4fd6be',
-}
-const HEAT = [TN.teal, TN.yellow, TN.orange, TN.red]
-// Nerd Font のアイコン
-const ICON = {
-  model: '\u{F06A9}',
-  repo: '\uf401',
-  branch: '\ue725',
-  limit: '\u{F029A}',
-  context: '\u{F09D1}',
-  cache: '\u{F01BC}',
-  next: '\uf04e',
-  now: '\u{F140B}',
-  session: '\uf017',
-  tasks: '\uf046',
-  files: '\uf040',
-}
-const GRADES = [
-  { name: 'S', from: 0.7, color: '#7ee0ff' },
-  { name: 'A', from: 0.5, color: '#7fe0a0' },
-  { name: 'B', from: 0.3, color: '#e8d27a' },
-  { name: 'C', from: 0.15, color: '#f0a050' },
-  { name: 'D', from: 0, color: '#f05a5a' },
-] as const
-const NAMES: Record<string, string> = {
-  'System prompt': 'システム',
-  'System tools': 'ツール',
-  'MCP tools': 'MCP',
-  'Custom agents': 'エージェント',
-  'Memory files': 'メモリ',
-  Skills: 'スキル',
-  Messages: '会話',
-}
-const SLACK_COLUMNS = 2
-const PANE = 'session-dashboard'
-const TITLE = '📊 Session'
-const WATCH_MS = 2000
-
-const fill = atom({ plugin: 'session-dashboard', key: 'fill' } as const, null, { shape: 'fill-1' })
-const lastTurnEnd = atom({ plugin: 'session-dashboard', key: 'lastTurnEnd' } as const, null)
-const sessionStart = atom({ plugin: 'session-dashboard', key: 'sessionStart' } as const, null)
-const upcoming = atom({ plugin: 'session-dashboard', key: 'upcoming' } as const, null)
-const tick = atom({ plugin: 'session-dashboard', key: 'tick' } as const, 0)
-const isPaneShown = atom({ plugin: 'session-dashboard', key: 'isPaneShown' } as const, false)
-const claude = atom({ plugin: 'session-dashboard', key: 'claude' } as const, null)
-const repo = atom({ plugin: 'session-dashboard', key: 'repo' } as const, null)
-const IDLE: Activity = { isWorking: false, task: null, said: null, tool: null, phase: null, startedAt: null }
-const activity = atom({ plugin: 'session-dashboard', key: 'activity' } as const, IDLE)
-const second = atom({ plugin: 'session-dashboard', key: 'second' } as const, 0)
-const NO_TASKS: Tasks = { items: [], current: null }
-const tasks = atom({ plugin: 'session-dashboard', key: 'tasks' } as const, NO_TASKS)
-const files = atom({ plugin: 'session-dashboard', key: 'files' } as const, [] as Touched[])
-const NO_STATS: Stats = { turns: 0, calls: 0, usdAtStart: null }
-const stats = atom({ plugin: 'session-dashboard', key: 'stats' } as const, NO_STATS)
-
-const GIT_MS = 2000
-const LIMIT_NAMES: Record<string, string> = { five_hour: '5h', seven_day: '7d', spend_limit: '$' }
-// 2 行目に出さない、作業の中身を表さないツール
-const QUIET_TOOLS = new Set(['TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList', 'TodoWrite', 'ToolSearch'])
-const GIT_TOOLS = new Set(['Bash', 'Edit', 'Write', 'NotebookEdit'])
-const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit'])
-// 覚えておく、書き換えたファイルの数と、出す数
-const FILES_KEPT = 20
-const FILES_SHOWN = 5
-const TASKS_SHOWN = 8
-// 1 時間あたりの費用を出すまでの分数
-const RATE_MINUTES = 5
-
-const thousands = (tokens: number) => {
-  if (tokens >= 1_000_000) return `${Number((tokens / 1_000_000).toFixed(1))}M`
-  return tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : String(tokens)
-}
-
-const WIDE: [number, number][] = [
-  [0x1100, 0x115f],
-  [0x26a1, 0x26a1],
-  [0x2e80, 0xa4cf],
-  [0xac00, 0xd7a3],
-  [0xf900, 0xfaff],
-  [0xfe30, 0xfe4f],
-  [0xff00, 0xff60],
-  [0xffe0, 0xffe6],
-  [0x1f300, 0x1faff],
-  [0x20000, 0x3fffd],
-]
-
-const cellWidth = (text: string) =>
-  [...text].reduce((sum, char) => {
-    const code = char.codePointAt(0) ?? 0
-    return sum + (WIDE.some(([from, to]) => code >= from && code <= to) ? 2 : 1)
-  }, 0)
-
-const measure = async ($: EngineInterface) => {
-  const usage = await $.session.usage({ breakdown: 'summary' }).catch(() => undefined)
-  if (usage === undefined) return
-  const { context } = usage
-  const rows = context.breakdown?.categories ?? []
-  const of = (kind: string) => rows.filter(row => row.kind === kind).reduce((sum, row) => sum + row.tokens, 0)
-  const measured: Fill = {
-    slices: rows
-      .filter(row => row.kind === 'used' && row.tokens > 0)
-      .map(row => ({ name: NAMES[row.name] ?? row.name, tokens: row.tokens, color: row.color })),
-    free: of('free'),
-    buffer: of('buffer'),
-    tokens: context.tokens ?? context.breakdown?.totalTokens ?? 0,
-    window: context.window,
-    percent: context.percent ?? context.breakdown?.percentage ?? 0,
-  }
-  await update($, fill, () => measured)
-}
-
-// 空きの割合で S〜D を決める
-const gradeOf = (measured: Fill) => {
-  const ratio = measured.window === 0 ? 0 : measured.free / measured.window
-  return GRADES.find(grade => ratio >= grade.from) ?? GRADES[GRADES.length - 1]!
-}
-
-const kilo = (tokens: number) => `${(tokens / 1000).toFixed(1)}k`
-
-type Config = {
-  cacheMs: number
-  handoffPath: string
-}
-
-const configure = (options: PluginOptions): Config => ({
-  cacheMs: Number(options.cacheMinutes ?? '60') * 60_000,
-  handoffPath: String(options.handoffPath ?? '.claude/handoff.md'),
-})
+import { act, currentActivity, currentSecond, forget, nextCallNumber, phaseLine, running, tickWhileRunning } from './activity'
+import { statusLine, workingLine } from './band'
+import { claudeCard, contextCard, filesCard, limitCard, nextCard, nowCard, repoCard, sessionCard, tasksCard, unmeasuredCard } from './cards'
+import { draw } from './cell'
+import type { Seg } from './cell'
+import { currentClaude, limitsOf, readClaude, updateLimits, updateModel } from './claude'
+import { configure, PANE, SLACK_COLUMNS, TITLE, WATCH_MS } from './config'
+import { currentFiles, touchFile } from './files'
+import { currentRepo, readRepo } from './git'
+import { nextOf } from './handoff'
+import { cacheLeft, currentSession, endTurn, restart, watchPane } from './session'
+import { countCall, countTurn, currentStats } from './stats'
+import { currentTasks, trackTasks } from './tasks'
+import { currentFill, measure } from './tokens'
+import { describe, EDIT_TOOLS, firstLine, GIT_TOOLS, QUIET_TOOLS, textOf, toolName } from './tool'
+import type { Args } from './tool'
 
 let watcher: Timer | undefined
-let handoffFile: string | undefined
-
-const resolveHandoff = async ($: EngineInterface, config: Config) => {
-  const cwd = await $.session.cwd()
-  const top = await $.process
-    .run(['git', 'rev-parse', '--show-toplevel'], { cwd })
-    .then(result => (result.exitCode === 0 ? result.stdout.trim() : ''))
-    .catch(() => '')
-  const base = top === '' ? cwd : top
-  return config.handoffPath.startsWith('/') ? config.handoffPath : `${base.replace(/\/$/, '')}/${config.handoffPath}`
-}
-
-const handoffOf = async ($: EngineInterface, config: Config) => {
-  handoffFile ??= await resolveHandoff($, config)
-  return handoffFile
-}
-
-const parseNext = (text: string): string[] => {
-  const lines = text.split('\n')
-  const at = lines.findIndex(line => NEXT_LINE.test(line))
-  if (at < 0) return []
-  const chunks = [NEXT_LINE.exec(lines[at] ?? '')?.[1] ?? '']
-  for (const line of lines.slice(at + 1)) {
-    if (!/^\s+\S/.test(line)) break
-    chunks.push(line.trim())
-  }
-  return chunks
-    .join(' ')
-    .split(NEXT_ITEM)
-    .map(item => item.trim())
-    .filter(item => item !== '')
-}
-
-const readUpcoming = async ($: EngineInterface, config: Config): Promise<Upcoming | null> => {
-  const path = await handoffOf($, config)
-  const stat = await $.fs.stat(path).catch(() => undefined)
-  if (stat === undefined) return null
-  const text = await $.fs.read(path).catch(() => '')
-  const items = parseNext(typeof text === 'string' ? text : '')
-  return items.length === 0 ? null : { items, mtimeMs: stat.mtimeMs }
-}
-
-const begin = async ($: EngineInterface, config: Config) => {
-  handoffFile = undefined
-  const now = await $.clock.now()
-  const found = await readUpcoming($, config)
-  await update($, sessionStart, () => now)
-  await update($, lastTurnEnd, () => null)
-  await update($, stats, () => NO_STATS)
-  await update($, files, () => [])
-  await update($, upcoming, () => found)
-}
-
-const restart = async ($: EngineInterface, config: Config) => {
-  await begin($, config)
-  await measure($)
-}
-
-const watchPane = async ($: EngineInterface) => {
-  const shown = (await $.ui.panes()).some(pane => pane.id === PANE && pane.isShown)
-  if (shown !== (await read($, isPaneShown))) await update($, isPaneShown, () => shown)
-  const minute = Math.floor((await $.clock.now()) / 60_000)
-  if (minute !== (await read($, tick))) await update($, tick, () => minute)
-}
-
-// キャッシュが切れるまでの分数。切れていたら null
-const cacheLeft = async ($: EngineInterface, config: Config): Promise<number | null> => {
-  const now = await $.clock.now()
-  const start = await read($, sessionStart)
-  const lastTurn = await read($, lastTurnEnd)
-  const since = now - (lastTurn ?? start ?? now)
-  return since >= config.cacheMs ? null : Math.max(1, Math.ceil((config.cacheMs - since) / 60_000))
-}
-
-const nextOf = async ($: EngineInterface, config: Config): Promise<string[]> => {
-  const ahead = await read($, upcoming)
-  if (ahead === null) return []
-  const stat = await $.fs.stat(await handoffOf($, config)).catch(() => undefined)
-  return stat === undefined || stat.mtimeMs <= ahead.mtimeMs ? ahead.items : []
-}
-
-// 幅に収まらなければ末尾を … にする
-const fit = (text: string, width: number) => {
-  if (cellWidth(text) <= width) return text
-  let out = ''
-  for (const char of text) {
-    if (cellWidth(out + char) > width - 1) break
-    out += char
-  }
-  return `${out}…`
-}
-
-// claude-opus-5-5 を Opus 5.5 にする
-const modelName = (id: string) => {
-  const found = /^(?:claude-)?([a-z]+)(?:-(\d+)-(\d+))?/.exec(id)
-  if (found === null) return id
-  const name = found[1]!.charAt(0).toUpperCase() + found[1]!.slice(1)
-  return found[2] === undefined ? name : `${name} ${found[2]}.${found[3]}`
-}
-
-// 分数を 1h05m・12m の形にする
-const hoursMinutes = (minutes: number) => {
-  const hours = Math.floor(minutes / 60)
-  return hours > 0 ? `${hours}h${String(minutes % 60).padStart(2, '0')}m` : `${minutes}m`
-}
-
-const untilReset = (resetsAt: string | undefined, now: number) => {
-  if (resetsAt === undefined) return ''
-  const minutes = Math.floor((Date.parse(resetsAt) - now) / 60_000)
-  if (Number.isNaN(minutes)) return ''
-  if (minutes <= 0) return 'soon'
-  const hours = Math.floor(minutes / 60)
-  if (hours >= 24) return `${Math.floor(hours / 24)}d${hours % 24}h`
-  return hoursMinutes(minutes)
-}
-
-const limitsOf = (limits: readonly Limit[]): Limit[] =>
-  limits.map(limit => ({ kind: limit.kind, percentUsed: limit.percentUsed, ...(limit.resetsAt === undefined ? {} : { resetsAt: limit.resetsAt }) }))
-
-// 始めた時の費用を覚え、1 時間あたりの費用をこのセッションの分だけで出す
-const markStart = ($: EngineInterface, usd: number | null) =>
-  update($, stats, now => (now.usdAtStart === null && usd !== null ? { ...now, usdAtStart: usd } : now))
-
-let version: string | undefined
-
-const readClaude = async ($: EngineInterface) => {
-  version ??= (await $.session.version().catch(() => undefined))?.version ?? ''
-  const model = await $.session.model().catch(() => '')
-  const usage = await $.session.usage().catch(() => undefined)
-  const before = await read($, claude)
-  const next: Claude = {
-    model: modelName(model),
-    version,
-    usd: usage?.cost?.usd ?? before?.usd ?? null,
-    limits: usage === undefined ? (before?.limits ?? []) : limitsOf(usage.rateLimits),
-  }
-  await update($, claude, () => next)
-  await markStart($, next.usd)
-}
-
-// origin の URL から owner/repo を取る
-const repoName = (remote: string | null, root: string) => {
-  const found = remote === null ? null : /[:/]([^/:]+\/[^/]+?)(?:\.git)?\/?$/.exec(remote)
-  return found?.[1] ?? root.replace(/\/$/, '').split('/').pop() ?? ''
-}
-
-let gitAt = 0
-
-const readRepo = async ($: EngineInterface, isForced = false) => {
-  const now = await $.clock.now()
-  if (!isForced && now - gitAt < GIT_MS) return
-  gitAt = now
-  const found = await $.session.repo().catch(() => null)
-  if (found === null) {
-    await update($, repo, () => null)
-    return
-  }
-  const cwd = await $.session.cwd()
-  const git = (args: string[]) =>
-    $.process
-      .run(['git', ...args], { cwd })
-      .then(result => (result.exitCode === 0 ? result.stdout : ''))
-      .catch(() => '')
-  const [branch, numstat, status] = await Promise.all([git(['branch', '--show-current']), git(['diff', 'HEAD', '--numstat']), git(['status', '--porcelain'])])
-  const sum = (column: number) =>
-    numstat
-      .split('\n')
-      .filter(line => line !== '')
-      .map(line => Number(line.split('\t')[column]))
-      .filter(count => Number.isFinite(count))
-      .reduce((total, count) => total + count, 0)
-  const next: Repo = {
-    name: repoName(found.remote, found.root),
-    branch: branch.trim(),
-    added: sum(0),
-    deleted: sum(1),
-    untracked: status.split('\n').filter(line => line.startsWith('??')).length,
-  }
-  await update($, repo, () => next)
-}
-
-// 応答の最初の行から、表や見出しの記号を外す
-const firstLine = (answer: string) =>
-  answer
-    .split('\n')
-    .map(text => text.replace(/^[\s#>*\-|]+/, '').replace(/[`*]/g, '').trim())
-    .find(text => text !== '') ?? null
-
-const baseName = (path: unknown) => (typeof path === 'string' ? (path.split('/').pop() ?? path) : '')
-
-type Args = Record<string, unknown>
-
-const textOf = (e: Args, key: string) => (typeof e[key] === 'string' ? (e[key] as string) : undefined)
-
-// ツールの呼び出しを「名前: 対象」の 1 行にする
-const describe = (e: Args) => {
-  const tool = String(e.tool)
-  const text = (key: string) => textOf(e, key) ?? ''
-  const detail = (() => {
-    switch (tool) {
-      case 'Bash':
-        return text('description') || text('command')
-      case 'Read':
-      case 'Edit':
-      case 'Write':
-        return baseName(e.file_path)
-      case 'NotebookEdit':
-        return baseName(e.notebook_path)
-      case 'Grep':
-      case 'Glob':
-        return text('pattern')
-      case 'Agent':
-      case 'Task':
-        return text('description')
-      case 'Skill':
-        return text('skill')
-      case 'WebFetch':
-        return text('url')
-      case 'WebSearch':
-        return text('query')
-      default:
-        return ''
-    }
-  })()
-  const name = tool.startsWith('mcp__') ? (tool.split('__').pop() ?? tool) : tool
-  const line = detail === '' ? name : `${name}: ${detail.split('\n')[0]}`
-  return e.agentId === undefined ? line : `↳ ${line}`
-}
-
-const taskLineOf = (list: Tasks) => {
-  const task = list.items.find(item => item.id === list.current)
-  return task === undefined ? null : task.activeForm || task.subject || null
-}
-
-const pick = (e: Args, key: 'subject' | 'activeForm') => {
-  const value = textOf(e, key)
-  return value === undefined ? {} : { [key]: value }
-}
-
-type Todo = { content?: string; activeForm?: string; status?: string }
-
-const statusOf = (status: string | undefined): TaskItem['status'] => (status === 'in_progress' || status === 'completed' ? status : 'pending')
-
-// TaskCreate・TaskUpdate・TodoWrite から、作業の一覧と作業中の項目を追う
-const trackOf = (list: Tasks, e: Args, result: unknown): Tasks => {
-  if (e.tool === 'TaskCreate') {
-    const id = (result as { task?: { id?: string } } | undefined)?.task?.id
-    const subject = textOf(e, 'subject')
-    if (id === undefined || subject === undefined) return list
-    return { ...list, items: [...list.items.filter(item => item.id !== id), { id, subject, ...pick(e, 'activeForm'), status: 'pending' }] }
-  }
-  if (e.tool === 'TaskUpdate') {
-    const id = textOf(e, 'taskId')
-    if (id === undefined) return list
-    const status = textOf(e, 'status')
-    if (status === 'deleted') return { items: list.items.filter(item => item.id !== id), current: list.current === id ? null : list.current }
-    const before = list.items.find(item => item.id === id)
-    const item: TaskItem = { subject: '', status: 'pending', ...before, id, ...pick(e, 'subject'), ...pick(e, 'activeForm'), ...(status === undefined ? {} : { status: statusOf(status) }) }
-    const items = before === undefined ? [...list.items, item] : list.items.map(found => (found.id === id ? item : found))
-    const current = status === 'in_progress' ? id : status === 'completed' && list.current === id ? null : list.current
-    return { items, current }
-  }
-  if (e.tool === 'TodoWrite' && Array.isArray(e.todos)) {
-    const items = (e.todos as Todo[]).map((todo, index): TaskItem => ({
-      id: `todo-${index}`,
-      subject: todo.content ?? '',
-      ...(todo.activeForm === undefined ? {} : { activeForm: todo.activeForm }),
-      status: statusOf(todo.status),
-    }))
-    return { items, current: items.find(item => item.status === 'in_progress')?.id ?? null }
-  }
-  return list
-}
-
-const act = async ($: EngineInterface, change: Partial<Activity>) => {
-  const task = taskLineOf(await read($, tasks))
-  await update($, activity, now => ({ ...now, ...change, task }))
-}
-
-// 書き換えたファイルを、新しい順に回数と並べる
-const touch = (list: readonly Touched[], path: string): Touched[] => {
-  const before = list.find(item => item.path === path)
-  return [{ path, count: (before?.count ?? 0) + 1 }, ...list.filter(item => item.path !== path)].slice(0, FILES_KEPT)
-}
-
-// 名前だけの 1 行。準備中のツールに使う
-const toolName = (tool: string, agentId: string | undefined) => {
-  const name = tool.startsWith('mcp__') ? (tool.split('__').pop() ?? tool) : tool
-  return agentId === undefined ? name : `↳ ${name}`
-}
-
-// 動いているツールの呼び出し。重なった呼び出しを、始まった順に持つ
-const running = new Map<string, { tool: string; startedAt: number }>()
-let callCount = 0
-let ticker: Timer | undefined
-
-// ツールが動いている間だけ、経った秒数のために 1 秒ごとに描き直す
-const tickWhileRunning = ($: EngineInterface, isRunning: boolean) => {
-  if (!isRunning) {
-    ticker?.cancel()
-    ticker = undefined
-    return
-  }
-  ticker ??= $.clock.every(1000, () => void $.clock.now().then(now => update($, second, () => Math.floor(now / 1000))))
-}
-
-const phaseLine = (doing: Activity, now: number): { mark: string; text: string; color: string } | null => {
-  const phase = doing.phase ?? null
-  if (phase === 'thinking') return { mark: '', text: '考えています…', color: TN.comment }
-  if (doing.tool === null) return null
-  if (phase === 'preparing') return { mark: '', text: `${doing.tool} を準備しています…`, color: TN.comment }
-  if (phase === 'running') {
-    const seconds = doing.startedAt == null ? 0 : Math.max(0, Math.floor((now - doing.startedAt) / 1000))
-    return { mark: '● ', text: `${doing.tool} · ${seconds}s`, color: TN.fg }
-  }
-  return { mark: '✓ ', text: doing.tool, color: TN.comment }
-}
-
-const forget = async ($: EngineInterface) => {
-  await update($, tasks, () => NO_TASKS)
-  running.clear()
-  tickWhileRunning($, false)
-  await update($, activity, () => IDLE)
-}
-
-type Seg = { text: string; color?: string; bold?: boolean }
-
-const segWidth = (segs: readonly Seg[]) => segs.reduce((sum, seg) => sum + cellWidth(seg.text), 0)
-
-// 幅に収まらなければ、はみ出す所から … にする
-const fitSegs = (segs: readonly Seg[], width: number): Seg[] => {
-  if (segWidth(segs) <= width) return [...segs]
-  const out: Seg[] = []
-  let used = 0
-  for (const seg of segs) {
-    const cells = cellWidth(seg.text)
-    if (used + cells < width) {
-      out.push(seg)
-      used += cells
-      continue
-    }
-    // ちょうど収まっても後ろが切れるので、… で終える
-    out.push({ ...seg, text: fit(`${seg.text} `, width - used) })
-    break
-  }
-  return out
-}
-
-const padSegs = (segs: readonly Seg[], width: number): Seg[] => {
-  const fitted = fitSegs(segs, width)
-  return [...fitted, { text: ' '.repeat(Math.max(0, width - segWidth(fitted))) }]
-}
-
-type TextElement = ReturnType<EngineInterface['ui']['resolve']>['Text']
-
-const draw = (Text: TextElement, segs: readonly Seg[]) => (
-  <Text>
-    {segs.map(seg => (
-      <Text {...(seg.color === undefined ? {} : { color: seg.color })} {...(seg.bold === true ? { bold: true } : {})}>
-        {seg.text}
-      </Text>
-    ))}
-  </Text>
-)
-
-const rgbOf = (hex: string) => [1, 3, 5].map(at => parseInt(hex.slice(at, at + 2), 16))
-
-// stops の色の間を、t（0〜1）で混ぜる
-const blend = (stops: readonly string[], t: number) => {
-  const at = Math.max(0, Math.min(1, t)) * (stops.length - 1)
-  const from = Math.min(stops.length - 2, Math.floor(at))
-  const [a, b] = [rgbOf(stops[Math.max(0, from)]!), rgbOf(stops[Math.max(0, from) + 1] ?? stops[Math.max(0, from)]!)]
-  return `#${a.map((value, index) => Math.round(value + (b[index]! - value) * (at - from)).toString(16).padStart(2, '0')).join('')}`
-}
-
-const heat = (t: number, palette: { teal: string; yellow: string; orange: string; red: string } = TN) => blend([palette.teal, palette.yellow, palette.orange, palette.red], t)
-
-// 1 マスずつ色が移る棒
-const gradient = (ratio: number, columns: number, stops: readonly string[], track: string, full = '━', empty = '━'): Seg[] => {
-  const filled = Math.max(0, Math.min(columns, Math.round(ratio * columns)))
-  const cells: Seg[] = Array.from({ length: filled }, (_, index) => ({ text: full, color: blend(stops, index / Math.max(1, columns - 1)) }))
-  return filled === columns ? cells : [...cells, { text: empty.repeat(columns - filled), color: track }]
-}
-
-const valueWidth = (inner: number, keyWidth: number) => Math.max(1, inner - keyWidth - 7)
-
-// 題を上の罫線に、note を下の罫線に埋めた 2 列の表
-const keyWidthOf = (rows: [Seg[], Seg[]][]) => Math.max(1, ...rows.map(([key]) => segWidth(key)))
-
-const card = (title: Seg[], rows: [Seg[], Seg[]][], inner: number, note?: Seg[]): Seg[][] => {
-  const line = TN.line
-  const keyWidth = keyWidthOf(rows)
-  const value = inner - keyWidth - 7
-  // 表が描けないほど狭ければ、罫線を外して 1 行ずつ並べる
-  if (value < 4)
-    return [fitSegs(title, inner), ...rows.map(([key, cell]) => fitSegs([...key, { text: ' ' }, ...cell], inner)), ...(note === undefined ? [] : [fitSegs(note, inner)])]
-  const head = fitSegs(title, Math.max(1, inner - 5))
-  const out: Seg[][] = [[{ text: '╭─ ', color: line }, ...head, { text: ` ${'─'.repeat(Math.max(0, inner - 5 - segWidth(head)))}╮`, color: line }]]
-  for (const [key, cell] of rows)
-    out.push([{ text: '│ ', color: line }, ...padSegs(key, keyWidth), { text: ' │ ', color: line }, ...padSegs(cell, value), { text: ' │', color: line }])
-  if (note === undefined) out.push([{ text: `╰${'─'.repeat(keyWidth + 2)}┴${'─'.repeat(value + 2)}╯`, color: line }])
-  else {
-    const tail = fitSegs(note, Math.max(1, inner - 5))
-    out.push([{ text: `╰${'─'.repeat(Math.max(0, inner - 5 - segWidth(tail)))} `, color: line }, ...tail, { text: ' ─╯', color: line }])
-  }
-  return out
-}
-
-const changeSegs = (git: Repo, palette: { green: string; red: string; yellow: string; comment: string } = TN): Seg[] => {
-  const parts: Seg[] = [
-    ...(git.added > 0 ? [{ text: `+${git.added}`, color: palette.green }] : []),
-    ...(git.deleted > 0 ? [{ text: `-${git.deleted}`, color: palette.red }] : []),
-    ...(git.untracked > 0 ? [{ text: `?${git.untracked}`, color: palette.yellow }] : []),
-  ]
-  return parts.length === 0 ? [{ text: 'なし', color: palette.comment }] : parts.flatMap((part, index) => (index === 0 ? [part] : [{ text: ' ' }, part]))
-}
-
-const elapsedOf = (ms: number) => hoursMinutes(Math.max(0, Math.floor(ms / 60_000)))
-
-const TASK_MARKS: Record<TaskItem['status'], Seg> = {
-  completed: { text: '✓', color: TN.green },
-  in_progress: { text: '●', color: TN.yellow },
-  pending: { text: '·', color: TN.comment },
-}
-
-const TASK_COLORS: Record<TaskItem['status'], string> = { completed: TN.comment, in_progress: TN.fg, pending: TN.fgDark }
-
-// 多すぎる時は、古い済みのものから落とす
-const shownTasks = (items: readonly TaskItem[]) => {
-  const dropped = new Set<TaskItem>()
-  for (const item of items) {
-    if (items.length - dropped.size <= TASKS_SHOWN) break
-    if (item.status === 'completed') dropped.add(item)
-  }
-  return items.filter(item => !dropped.has(item)).slice(-TASKS_SHOWN)
-}
-
-const stepSegs = (step: { mark: string; text: string; color: string }): Seg[] => [
-  ...(step.mark === '' ? [] : [{ text: step.mark, color: step.mark === '● ' ? TN.yellow : TN.green }]),
-  { text: step.text, color: step.color },
-]
 
 export const register: Register = (on, options) => {
   const config = configure(options)
@@ -636,8 +54,7 @@ export const register: Register = (on, options) => {
     if (e.changed.includes('rateLimits') || e.changed.includes('cost')) {
       const limits = limitsOf(e.rateLimits)
       const usd = e.cost?.usd ?? null
-      await update($, claude, now => (now === null ? now : { ...now, limits, usd: usd ?? now.usd }))
-      await markStart($, usd)
+      await updateLimits($, limits, usd)
     }
     return measured
   })
@@ -686,8 +103,7 @@ export const register: Register = (on, options) => {
     if (isMain) {
       const said = firstLine(stepped.answer)
       if (said !== null) await act($, { said })
-      const model = modelName(e.model)
-      await update($, claude, now => (now === null || now.model === model ? now : { ...now, model }))
+      await updateModel($, e.model)
     }
     return stepped
   })
@@ -695,11 +111,10 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     const args = e as unknown as Args
     const isShown = !QUIET_TOOLS.has(e.tool)
-    callCount += 1
-    const id = e.tool_use_id ?? `call-${callCount}`
+    const id = e.tool_use_id ?? `call-${nextCallNumber()}`
     const tool = describe(args)
     if (isShown) {
-      await update($, stats, now => ({ ...now, calls: now.calls + 1 }))
+      await countCall($)
       running.set(id, { tool, startedAt: await $.clock.now() })
       tickWhileRunning($, true)
       await act($, { tool, phase: 'running', startedAt: running.get(id)!.startedAt })
@@ -715,9 +130,9 @@ export const register: Register = (on, options) => {
       }
     })
     if ('result' in done) {
-      await update($, tasks, now => trackOf(now, args, done.result))
+      await trackTasks($, args, done.result)
       const path = textOf(args, 'file_path') ?? textOf(args, 'notebook_path')
-      if (EDIT_TOOLS.has(e.tool) && path !== undefined) await update($, files, now => touch(now, path))
+      if (EDIT_TOOLS.has(e.tool) && path !== undefined) await touchFile($, path)
       if (QUIET_TOOLS.has(e.tool)) await act($, {})
       if (GIT_TOOLS.has(e.tool)) await readRepo($)
     }
@@ -734,154 +149,37 @@ export const register: Register = (on, options) => {
     const { Box, Text } = $.ui.resolve(e)
     const inner = Math.max(1, e.props.bodyColumns - 2)
     const now = await $.clock.now()
-    await read($, tick)
-    const info = await read($, claude)
-    const git = await read($, repo)
-    const doing = await read($, activity)
-    await read($, second)
+    const session = await currentSession($)
+    const info = await currentClaude($)
+    const git = await currentRepo($)
+    const doing = await currentActivity($)
+    await currentSecond($)
     const step = phaseLine(doing, now)
-    const measured = await read($, fill)
+    const measured = await currentFill($)
     const cards: Seg[][] = []
 
-    if (info !== null)
-      cards.push(
-        ...card(
-          [{ text: `${ICON.model} Claude`, color: TN.blue, bold: true }],
-          [
-            [[{ text: 'model', color: TN.comment }], [{ text: info.model, color: TN.fg }]],
-            [[{ text: 'cost', color: TN.comment }], [{ text: info.usd === null ? '—' : `$${info.usd.toFixed(2)}`, color: TN.orange }]],
-          ],
-          inner,
-          info.version === '' ? undefined : [{ text: `v${info.version}`, color: TN.comment }],
-        ),
-      )
+    if (info !== null) cards.push(...claudeCard(info, inner))
+    if (git !== null) cards.push(...repoCard(git, inner))
+    if (info !== null && info.limits.length > 0) cards.push(...limitCard(info.limits, now, inner))
 
-    if (git !== null)
-      cards.push(
-        ...card(
-          [{ text: `${ICON.repo} ${git.name}`, color: TN.cyan, bold: true }],
-          [
-            [[{ text: 'branch', color: TN.comment }], [{ text: git.branch === '' ? '—' : git.branch, color: TN.magenta }]],
-            [[{ text: 'diff', color: TN.comment }], changeSegs(git)],
-          ],
-          inner,
-        ),
-      )
-
-    const limits = info?.limits ?? []
-    if (limits.length > 0) {
-      const keys = limits.map((limit): Seg[] => [{ text: LIMIT_NAMES[limit.kind] ?? limit.kind, color: TN.fg }])
-      const value = valueWidth(inner, keyWidthOf(keys.map((key): [Seg[], Seg[]] => [key, []])))
-      const resets = limits.map(limit => untilReset(limit.resetsAt, now))
-      // 棒の長さをそろえるため、戻るまでの時間は一番長いものの幅で取る
-      const resetWidth = Math.max(0, ...resets.map(until => cellWidth(until)))
-      const isResetShown = resetWidth > 0 && value - 5 - resetWidth - 1 >= 4
-      cards.push(
-        ...card(
-          [{ text: `${ICON.limit} Limit`, color: TN.yellow, bold: true }],
-          limits.map((limit, index) => {
-            const percent = `${Math.round(limit.percentUsed)}%`.padStart(4)
-            // 棒が 4 も取れなければ、戻るまでの時間を落とす
-            const reset = isResetShown ? ` ${' '.repeat(resetWidth - cellWidth(resets[index] ?? ''))}${resets[index] ?? ''}` : ''
-            const columns = Math.max(1, value - 5 - (isResetShown ? resetWidth + 1 : 0))
-            return [
-              keys[index] ?? [],
-              [...gradient(limit.percentUsed / 100, columns, HEAT, TN.line), { text: ` ${percent}`, color: heat(limit.percentUsed / 100), bold: true }, { text: reset, color: TN.comment }],
-            ]
-          }),
-          inner,
-        ),
-      )
-    }
-
-    if (measured === null || measured.window === 0)
-      cards.push(...card([{ text: `${ICON.context} Context`, color: TN.magenta, bold: true }], [[[], [{ text: 'まだ測っていません。', color: TN.comment }]]], inner))
-    else {
-      const left = await cacheLeft($, config)
-      const grade = gradeOf(measured)
-      const legend = [...measured.slices].sort((x, y) => y.tokens - x.tokens)
-      const keyWidth = Math.max(4, ...legend.map(slice => cellWidth(slice.name)))
-      const value = valueWidth(inner, keyWidth)
-      const top = Math.max(...legend.map(slice => slice.tokens), 1)
-      const total = `${thousands(measured.tokens)}/${thousands(measured.window)}`
-      cards.push(
-        ...card(
-          [{ text: `${ICON.context} Context ${measured.percent}%`, color: TN.magenta, bold: true }],
-          [
-            [[{ text: 'used', color: TN.comment }], [...gradient(measured.percent / 100, Math.max(1, value - cellWidth(total) - 1), [TN.blue, TN.magenta], TN.line), { text: ` ${total}`, color: TN.fg }]],
-            ...legend.map((slice): [Seg[], Seg[]] => [
-              [{ text: slice.name, color: TN.fgDark }],
-              [{ text: kilo(slice.tokens).padStart(6), color: TN.fg }, { text: ' ' }, ...gradient(slice.tokens / top, Math.max(1, value - 7), [TN.magenta, TN.magenta], TN.bgHighlight, '━', ' ')],
-            ]),
-          ],
-          inner,
-          [
-            { text: 'grade ', color: TN.comment },
-            { text: grade.name, color: grade.color, bold: true },
-            { text: ` · ${ICON.cache} ${left === null ? 'cold' : `${left}m`}`, color: TN.comment },
-          ],
-        ),
-      )
-    }
+    if (measured === null || measured.window === 0) cards.push(...unmeasuredCard(inner))
+    else cards.push(...contextCard(measured, await cacheLeft($, config), inner))
 
     const next = await nextOf($, config)
-    if (next.length > 0)
-      cards.push(...card([{ text: `${ICON.next} Next`, color: TN.blue, bold: true }], next.map((item, index): [Seg[], Seg[]] => [[{ text: `${index + 1}`, color: TN.comment }], [{ text: item, color: TN.fg }]]), inner))
+    if (next.length > 0) cards.push(...nextCard(next, inner))
+    cards.push(...nowCard(doing, step, inner))
 
-    const summary = doing.task ?? doing.said
-    const nowRows: [Seg[], Seg[]][] = [[[{ text: '作業', color: TN.comment }], [{ text: summary ?? '待っています', color: doing.isWorking ? TN.fg : TN.comment }]]]
-    if (doing.isWorking && step !== null) nowRows.push([[{ text: '実行', color: TN.comment }], stepSegs(step)])
-    else if (!doing.isWorking && summary !== null) nowRows.push([[{ text: '状態', color: TN.comment }], [{ text: '待っています', color: TN.comment }]])
-    cards.push(...card([{ text: `${ICON.now} Now`, color: TN.yellow, bold: true }], nowRows, inner))
-
-    const counted = await read($, stats)
-    const start = await read($, sessionStart)
-    if (start !== null) {
-      const ms = now - start
+    const counted = await currentStats($)
+    if (session.start !== null) {
       const spent = info?.usd == null ? null : info.usd - (counted.usdAtStart ?? 0)
-      const rate = spent === null || ms < RATE_MINUTES * 60_000 ? '—' : `$${(spent / (ms / 3_600_000)).toFixed(2)}/h`
-      cards.push(
-        ...card(
-          [{ text: `${ICON.session} Session`, color: TN.teal, bold: true }],
-          [
-            [[{ text: 'time', color: TN.comment }], [{ text: elapsedOf(ms), color: TN.fg }, { text: ` · ${counted.turns} turns`, color: TN.fgDark }]],
-            [[{ text: 'calls', color: TN.comment }], [{ text: String(counted.calls), color: TN.fg }, { text: ` · ${rate}`, color: TN.orange }]],
-          ],
-          inner,
-        ),
-      )
+      cards.push(...sessionCard(now - session.start, counted.turns, counted.calls, spent, inner))
     }
 
-    const list = (await read($, tasks)).items.filter(item => item.subject !== '')
-    if (list.length > 0) {
-      const finished = list.filter(item => item.status === 'completed').length
-      const shown = shownTasks(list)
-      cards.push(
-        ...card(
-          [{ text: `${ICON.tasks} Tasks ${finished}/${list.length}`, color: TN.green, bold: true }],
-          shown.map((item): [Seg[], Seg[]] => [[TASK_MARKS[item.status]], [{ text: item.subject, color: TASK_COLORS[item.status] }]]),
-          inner,
-          shown.length < list.length ? [{ text: `+${list.length - shown.length}`, color: TN.comment }] : undefined,
-        ),
-      )
-    }
+    const list = (await currentTasks($)).items.filter(item => item.subject !== '')
+    if (list.length > 0) cards.push(...tasksCard(list, inner))
 
-    const touched = (await read($, files)).slice(0, FILES_SHOWN)
-    if (touched.length > 0)
-      cards.push(
-        ...card(
-          [{ text: `${ICON.files} Files`, color: TN.orange, bold: true }],
-          touched.map((item): [Seg[], Seg[]] => {
-            const parts = item.path.split('/')
-            const folder = parts.at(-2)
-            return [
-              [{ text: `×${item.count}`, color: TN.comment }],
-              [{ text: parts.at(-1) ?? item.path, color: TN.fg }, ...(folder === undefined || folder === '' ? [] : [{ text: ` ${folder}`, color: TN.comment }])],
-            ]
-          }),
-          inner,
-        ),
-      )
+    const touched = await currentFiles($)
+    if (touched.length > 0) cards.push(...filesCard(touched, inner))
 
     return (
       <Box flexDirection="column" paddingX={1}>
@@ -893,9 +191,8 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
     if (e.agentId === undefined) {
-      const now = await $.clock.now()
-      await update($, lastTurnEnd, () => now)
-      await update($, stats, now => ({ ...now, turns: now.turns + 1 }))
+      await endTurn($)
+      await countTurn($)
       running.clear()
       tickWhileRunning($, false)
       await act($, { isWorking: false, tool: null, phase: null, startedAt: null })
@@ -906,52 +203,25 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const measured = await read($, fill)
-    if (e.props.hasSurvey || measured === null || measured.window === 0 || (await read($, isPaneShown))) return next(e)
+    const measured = await currentFill($)
+    if (e.props.hasSurvey || measured === null || measured.window === 0 || (await currentSession($)).isPaneShown) return next(e)
 
     const { Box, Text } = $.ui.resolve(e)
     const beneath = await next(e)
-    await read($, tick)
-    await read($, second)
+    await currentSecond($)
     const now = await $.clock.now()
     const left = await cacheLeft($, config)
-    const doing = await read($, activity)
+    const doing = await currentActivity($)
     const step = phaseLine(doing, now)
-    const summary = doing.task ?? doing.said
-    const info = await read($, claude)
-    const git = await read($, repo)
+    const info = await currentClaude($)
+    const git = await currentRepo($)
     const width = Math.max(1, e.props.bodyColumns - SLACK_COLUMNS)
-
-    const working: Seg[] = []
-    if (doing.isWorking && (summary !== null || step !== null)) {
-      working.push({ text: '● ', color: MOON.yellow })
-      if (summary !== null) working.push({ text: summary, color: MOON.fg })
-      if (summary !== null && step !== null) working.push({ text: ' │ ', color: MOON.comment })
-      if (step !== null) working.push({ text: step.mark === '' ? '' : step.mark, color: step.mark === '● ' ? MOON.yellow : MOON.green }, { text: step.text, color: MOON.comment })
-    }
-
-    // 区切りの │ で並べるセル。枝は、幅に収まるように最後に縮める
-    const cells: Seg[][] = []
-    if (info !== null && info.model !== '') cells.push([{ text: info.model, color: MOON.blue }])
-    const branchAt = cells.length
-    if (git !== null && git.branch !== '') cells.push([{ text: `${ICON.branch} ${git.branch}`, color: MOON.magenta }])
-    if (git !== null && git.added + git.deleted + git.untracked > 0) cells.push(changeSegs(git, MOON))
-    cells.push([{ text: 'ctx ', color: MOON.fg }, { text: `${measured.percent}%`, color: MOON.cyan }])
-    for (const limit of info?.limits ?? [])
-      cells.push([{ text: `${LIMIT_NAMES[limit.kind] ?? limit.kind} `, color: MOON.fg }, { text: `${Math.round(limit.percentUsed)}%`, color: heat(limit.percentUsed / 100, MOON) }])
-    cells.push([{ text: `${ICON.cache} ${left === null ? 'cold' : `${left}m`}`, color: MOON.comment }])
-    const bar = { text: '│', color: MOON.magenta }
-    const lineOf = (row: Seg[][]) => [bar, ...row.flatMap(cell => [{ text: ' ' }, ...cell, { text: ' ' }, bar])]
-    const over = segWidth(lineOf(cells)) - width
-    if (over > 0 && git !== null && git.branch !== '' && cells[branchAt] !== undefined) {
-      const room = Math.max(4, segWidth(cells[branchAt]!) - over)
-      cells[branchAt] = fitSegs(cells[branchAt]!, room)
-    }
+    const working = workingLine(doing, step, width)
 
     return (
       <Box flexDirection="column">
-        {working.length === 0 ? null : draw(Text, fitSegs(working, width))}
-        {draw(Text, fitSegs(lineOf(cells), width))}
+        {working.length === 0 ? null : draw(Text, working)}
+        {draw(Text, statusLine(info, git, measured, left, width))}
         {beneath}
       </Box>
     )
