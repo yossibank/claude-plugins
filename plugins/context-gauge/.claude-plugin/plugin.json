@@ -14,18 +14,6 @@
       ],
       "default": "60"
     },
-    "yellowAt": {
-      "type": "number",
-      "title": "黄の割合（%）",
-      "description": "数字と棒を黄にする文脈の割合",
-      "default": 50
-    },
-    "redAt": {
-      "type": "number",
-      "title": "赤の割合（%）",
-      "description": "数字と棒を赤にする文脈の割合",
-      "default": 80
-    },
     "handoffPath": {
       "type": "string",
       "title": "handoff の置き場",

@@ -5,27 +5,19 @@ import type { Fill, Upcoming } from '../types'
 
 const NEXT_LINE = /^\s*[-*]\s*次[：:]\s*(.*)$/
 const NEXT_ITEM = /(?:^|\s)\d+[.．]\s+/
-const NEXT_HEAD = '📌 次  '
-const EMPTY = '⣀'
-const FULL = '⣿'
-const DIGITS: Record<string, [string, string, string]> = {
-  '0': ['┏━┓', '┃ ┃', '┗━┛'],
-  '1': ['╺┓ ', ' ┃ ', '╺┻╸'],
-  '2': ['┏━┓', '┏━┛', '┗━╸'],
-  '3': ['┏━┓', ' ━┫', '┗━┛'],
-  '4': ['╻ ╻', '┗━┫', '  ╹'],
-  '5': ['┏━╸', '┗━┓', '┗━┛'],
-  '6': ['┏━╸', '┣━┓', '┗━┛'],
-  '7': ['┏━┓', '  ┃', '  ╹'],
-  '8': ['┏━┓', '┣━┫', '┗━┛'],
-  '9': ['┏━┓', '┗━┫', '┗━┛'],
-  '%': ['█ ▞', ' ▞ ', '▞ █'],
-}
-const GRADIENTS = {
-  success: ['#6edc8c', '#50c8e6'],
-  warning: ['#f0c850', '#f08c46'],
-  error: ['#fa9650', '#f05050'],
-} as const
+const INK = '#e8e8e8'
+const MUTED = '#8b8f98'
+const LINE = '#3a3d44'
+const AMBER = '#f5a524'
+const GRADES = [
+  { name: 'S', from: 0.7, color: '#7ee0ff' },
+  { name: 'A', from: 0.5, color: '#7fe0a0' },
+  { name: 'B', from: 0.3, color: '#e8d27a' },
+  { name: 'C', from: 0.15, color: '#f0a050' },
+  { name: 'D', from: 0, color: '#f05a5a' },
+] as const
+const NAME_COLUMNS = 10
+const PROMPT_BAR_MAX = 24
 const NAMES: Record<string, string> = {
   'System prompt': 'システム',
   'System tools': 'ツール',
@@ -89,51 +81,28 @@ const measure = async ($: EngineInterface) => {
   await update($, fill, () => measured)
 }
 
-const digits = (text: string) => [0, 1, 2].map(row => [...text].map(char => DIGITS[char]?.[row] ?? '   ').join(' '))
-
-const mix = (from: string, to: string, t: number) =>
-  `#${[1, 3, 5]
-    .map(at => Math.round(parseInt(from.slice(at, at + 2), 16) * (1 - t) + parseInt(to.slice(at, at + 2), 16) * t))
-    .map(value => value.toString(16).padStart(2, '0'))
-    .join('')}`
-
-const widths = (parts: number[], columns: number) => {
-  const total = parts.reduce((sum, part) => sum + part, 0)
-  if (total === 0) return parts.map(() => 0)
-  const exact = parts.map(part => (part / total) * columns)
-  const cells = exact.map(Math.floor)
-  const order = exact.map((value, index) => ({ index, rest: value - Math.floor(value) })).sort((a, b) => b.rest - a.rest)
-  for (let left = columns - cells.reduce((sum, cell) => sum + cell, 0), i = 0; left > 0; left -= 1, i += 1) {
-    const at = order[i % order.length]?.index ?? 0
-    cells[at] = (cells[at] ?? 0) + 1
-  }
-  return cells
+const meter = (ratio: number, columns: number) => {
+  const full = Math.max(0, Math.min(columns, Math.round(ratio * columns)))
+  return { full, empty: columns - full }
 }
 
-const tone = (measured: Fill, config: Config): keyof typeof GRADIENTS =>
-  measured.percent >= config.redAt ? 'error' : measured.percent >= config.yellowAt ? 'warning' : 'success'
+// 空きの割合で S〜D を決める
+const gradeOf = (measured: Fill) => {
+  const ratio = measured.window === 0 ? 0 : measured.free / measured.window
+  return GRADES.find(grade => ratio >= grade.from) ?? GRADES[GRADES.length - 1]!
+}
+
+const kilo = (tokens: number) => `${(tokens / 1000).toFixed(1)}k`
 
 type Config = {
   cacheMs: number
-  yellowAt: number
-  redAt: number
   handoffPath: string
 }
 
-const DEFAULT_YELLOW = 50
-const DEFAULT_RED = 80
-
-const configure = (options: PluginOptions): Config => {
-  const yellow = Number(options.yellowAt ?? DEFAULT_YELLOW)
-  const red = Number(options.redAt ?? DEFAULT_RED)
-  const isValid = Number.isFinite(yellow) && Number.isFinite(red) && red >= yellow
-  return {
-    cacheMs: Number(options.cacheMinutes ?? '60') * 60_000,
-    yellowAt: isValid ? yellow : DEFAULT_YELLOW,
-    redAt: isValid ? red : DEFAULT_RED,
-    handoffPath: String(options.handoffPath ?? '.claude/handoff.md'),
-  }
-}
+const configure = (options: PluginOptions): Config => ({
+  cacheMs: Number(options.cacheMinutes ?? '60') * 60_000,
+  handoffPath: String(options.handoffPath ?? '.claude/handoff.md'),
+})
 
 let watcher: Timer | undefined
 let handoffFile: string | undefined
@@ -212,10 +181,8 @@ const nextOf = async ($: EngineInterface, config: Config): Promise<string[]> => 
   const ahead = await read($, upcoming)
   if (ahead === null) return []
   const stat = await $.fs.stat(await handoffOf($, config)).catch(() => undefined)
-  return stat === undefined || stat.mtimeMs <= ahead.mtimeMs ? ahead.items.map((item, index) => `${index + 1}. ${item}`) : []
+  return stat === undefined || stat.mtimeMs <= ahead.mtimeMs ? ahead.items : []
 }
-
-const nextRows = (next: string[]) => next.map((item, index) => (index === 0 ? `${NEXT_HEAD}${item}` : `${' '.repeat(cellWidth(NEXT_HEAD))}${item}`))
 
 export const register: Register = (on, options) => {
   const config = configure(options)
@@ -250,52 +217,64 @@ export const register: Register = (on, options) => {
     await read($, tick)
     const left = await cacheLeft($, config)
     const next = await nextOf($, config)
+    const grade = gradeOf(measured)
     const legend = [...measured.slices].sort((a, b) => b.tokens - a.tokens)
-    const nameColumns = Math.max(...legend.map(slice => cellWidth(slice.name)))
-    const tokenColumns = Math.max(...legend.map(slice => thousands(slice.tokens).length))
-    const columns = Math.max(8, e.props.bodyColumns - 2)
-    const cells = widths([...measured.slices.map(slice => slice.tokens), measured.free + measured.buffer], columns)
-    const [from, to] = GRADIENTS[tone(measured, config)]
+    const inner = Math.max(32, e.props.bodyColumns - 2)
+    const nameColumns = Math.max(NAME_COLUMNS, ...legend.map(slice => cellWidth(slice.name)))
+    const percent = `${measured.percent}%`
+    const clock = left === null ? 'cold' : `${left}m`
+    const top = Math.max(...legend.map(slice => slice.tokens), 1)
+    const usedBar = meter(measured.percent / 100, Math.max(4, inner - cellWidth(percent) - 2))
+    const legendBar = Math.max(4, inner - (2 + nameColumns + 7 + 6 + 2))
+    const cacheBar = meter(left === null ? 0 : (left * 60_000) / config.cacheMs, Math.max(4, inner - 7 - cellWidth(clock) - 2))
     const pad = (text: string, width: number) => text + ' '.repeat(Math.max(0, width - cellWidth(text)))
+    const rule = <Text color={LINE}>{'─'.repeat(inner)}</Text>
 
     return (
-      <Box flexDirection="column" paddingX={1} paddingY={1} gap={1}>
-        <Box flexDirection="column">
-          {digits(`${measured.percent}%`).map(row => (
-            <Text bold>
-              {[...row].map((char, index) => (
-                <Text color={mix(from, to, index / Math.max(1, row.length - 1))}>{char}</Text>
-              ))}
-            </Text>
-          ))}
-          <Text dimColor>
-            {thousands(measured.tokens)} / {thousands(measured.window)} · 空き {thousands(measured.free)}
-          </Text>
-        </Box>
+      <Box flexDirection="column" paddingX={1}>
         <Text>
-          {measured.slices.map((slice, index) => (
-            <Text color={slice.color}>{FULL.repeat(cells[index] ?? 0)}</Text>
-          ))}
-          <Text dimColor>{EMPTY.repeat(cells[measured.slices.length] ?? 0)}</Text>
+          <Text color={MUTED}>CONTEXT</Text>
+          <Text>{' '.repeat(Math.max(1, inner - 7 - 7))}</Text>
+          <Text color={MUTED}>GRADE </Text>
+          <Text bold color={grade.color}>{grade.name}</Text>
         </Text>
-        <Box flexDirection="column">
-          {legend.map(slice => (
+        <Text>
+          <Text bold color={INK}>{percent}</Text>
+          <Text>  </Text>
+          <Text color={AMBER}>{'▰'.repeat(usedBar.full)}</Text>
+          <Text color={LINE}>{'▱'.repeat(usedBar.empty)}</Text>
+        </Text>
+        <Text color={MUTED}>
+          {kilo(measured.tokens)} used · {kilo(measured.free)} free · {thousands(measured.window)}
+        </Text>
+        {rule}
+        {legend.map(slice => {
+          const bar = meter(slice.tokens / top, legendBar)
+          return (
             <Text>
               <Text color={slice.color}>●</Text>
-              <Text> {pad(slice.name, nameColumns)} </Text>
-              <Text>{thousands(slice.tokens).padStart(tokenColumns)}</Text>
-              <Text dimColor>{`${Math.round((slice.tokens / measured.window) * 100)}%`.padStart(5)}</Text>
+              <Text color={INK}> {pad(slice.name, nameColumns)}{kilo(slice.tokens).padStart(7)}</Text>
+              <Text color={MUTED}>{`${((slice.tokens / measured.window) * 100).toFixed(1)}%`.padStart(6)}</Text>
+              <Text>  </Text>
+              <Text color={slice.color}>{'━'.repeat(bar.full)}</Text>
+              <Text color={LINE}>{'─'.repeat(bar.empty)}</Text>
             </Text>
-          ))}
-        </Box>
-        <Text>{left === null ? '⏱ キャッシュは切れています' : `⏱ キャッシュ切れまで ${left} 分`}</Text>
-        {next.length > 0 && (
-          <Box flexDirection="column">
-            {nextRows(next).map(row => (
-              <Text>{row}</Text>
-            ))}
-          </Box>
-        )}
+          )
+        })}
+        {rule}
+        <Text>
+          <Text color={MUTED}>CACHE  </Text>
+          <Text bold color={INK}>{clock}</Text>
+          <Text>  </Text>
+          <Text color={AMBER}>{'━'.repeat(cacheBar.full)}</Text>
+          <Text color={LINE}>{'─'.repeat(cacheBar.empty)}</Text>
+        </Text>
+        {next.map((item, index) => (
+          <Text>
+            <Text color={MUTED}>{index === 0 ? 'NEXT   ' : '       '}</Text>
+            <Text color={INK}>{item}</Text>
+          </Text>
+        ))}
       </Box>
     )
   })
@@ -318,24 +297,23 @@ export const register: Register = (on, options) => {
     const beneath = await next(e)
     await read($, tick)
     const left = await cacheLeft($, config)
+    const grade = gradeOf(measured)
     const percent = `${measured.percent}%`
-    const color = tone(measured, config)
-    const right = `${thousands(measured.tokens)} / ${thousands(measured.window)} · ${left === null ? 'キャッシュ切れ' : `キャッシュ ${left} 分`}`
-    const fixed = 2 + cellWidth(percent) + 2 + 2 + cellWidth(right) + SLACK_COLUMNS
-    const columns = Math.max(8, e.props.bodyColumns - fixed)
-    const cells = widths([...measured.slices.map(slice => slice.tokens), measured.free + measured.buffer], columns)
+    const used = `${thousands(measured.tokens)} / ${thousands(measured.window)}`
+    const clock = `⏱ ${left === null ? 'cold' : `${left}m`}`
+    const fixed = 2 + 1 + 2 + cellWidth(percent) + 2 + 2 + cellWidth(used) + 2 + 1 + 2 + cellWidth(clock) + SLACK_COLUMNS
+    const bar = meter(measured.percent / 100, Math.max(4, Math.min(PROMPT_BAR_MAX, e.props.bodyColumns - fixed)))
 
     return (
       <Box flexDirection="column">
         <Text>
-          <Text color={color}>● </Text>
-          <Text bold color={color}>{percent}</Text>
+          <Text bold color={grade.color}>◆ {grade.name}</Text>
           <Text>  </Text>
-          {measured.slices.map((slice, index) => (
-            <Text color={slice.color}>{FULL.repeat(cells[index] ?? 0)}</Text>
-          ))}
-          <Text dimColor>{EMPTY.repeat(cells[measured.slices.length] ?? 0)}</Text>
-          <Text dimColor>  {right}</Text>
+          <Text bold color={INK}>{percent}</Text>
+          <Text>  </Text>
+          <Text color={AMBER}>{'▰'.repeat(bar.full)}</Text>
+          <Text color={LINE}>{'▱'.repeat(bar.empty)}</Text>
+          <Text color={MUTED}>  {used}  ·  {clock}</Text>
         </Text>
         {beneath}
       </Box>

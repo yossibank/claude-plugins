@@ -10,7 +10,7 @@
 | --- | --- |
 | [pr-browser](plugins/pr-browser) | `gh pr create` で作った PR のページを、[terminal-browser](https://github.com/zenbu-labs/terminal-browser) で右に開く。会話が 128 列より狭い時は下に開く |
 | [snapshot-gallery](plugins/snapshot-gallery) | `make snapshot` で描いた PNG を、直す前と後で左右に並べて pane に出す。`/snapshots <セット>` で開き、`j` と `k` で前と次に移る |
-| [context-gauge](plugins/context-gauge) | 文脈の埋まり具合を、種類ごとに色分けした棒で右の pane に出す。pane を閉じている間は入力欄の上に 1 行で出す。キャッシュが切れるまでの時間も出す |
+| [context-gauge](plugins/context-gauge) | 文脈の埋まり具合を、種類ごとに色分けした棒で右の pane に出し、空きの多さを S〜D の評価で出す。pane を閉じている間は入力欄の上に 1 行で出す。キャッシュが切れるまでの時間も出す |
 | [test-progress](plugins/test-progress) | テストのコマンドの間、進みの棒と落ちたテストを入力欄の上に出し、終わったらトーストで知らせる。コマンドの出力を `.build/test.log` に残しておく |
 
 ## 🚀 入れ方
@@ -39,8 +39,6 @@ brew install terminal-browser
 | snapshot-gallery | `snapshotsDir` | `.build/snapshots` | 描いた画像のフォルダ |
 | snapshot-gallery | `beforeDir` | `.build/snapshots-before` | 描く前の画像を取っておくフォルダ |
 | context-gauge | `cacheMinutes` | `60` | プロンプトキャッシュの寿命の分数。`5` か `60` |
-| context-gauge | `yellowAt` | `50` | 数字と棒を黄にする文脈の割合 |
-| context-gauge | `redAt` | `80` | 数字と棒を赤にする文脈の割合 |
 | context-gauge | `handoffPath` | `.claude/handoff.md` | 引き継ぎメモの置き場 |
 | test-progress | `commandPattern` | `make test` に当たる正規表現 | 見張るコマンド。区切り（`&&`・`;`・`\|`）ごとに当て、当たった文字を帯とトーストに出す |
 | test-progress | `logPath` | `.build/test.log` | コマンドが `tee` で書き込むログの置き場 |

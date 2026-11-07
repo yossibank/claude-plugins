@@ -9,7 +9,7 @@ const T0 = 1_000_000_000
 const MINUTE = 60_000
 const HANDOFF = '/repo/.claude/handoff.md'
 
-const engine = (on: On, percent: number, window = 200000, isShown = false, files: Record<string, File> = {}, state = { isUsageBroken: false }) => {
+const engine = (on: On, percent: number, window = 200000, isShown = false, files: Record<string, File> = {}, state: { isUsageBroken: boolean; free?: number } = { isUsageBroken: false }) => {
   const clock = mock.clock(on, { now: T0 })
   const counts = { panes: 0 }
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -45,7 +45,7 @@ const engine = (on: On, percent: number, window = 200000, isShown = false, files
         window,
         percent,
         breakdown: {
-          categories: [row('System prompt', 18000, 'used'), row('Messages', 64000, 'used'), row('Free space', 100000, 'free'), row('Autocompact buffer', 18000, 'buffer')],
+          categories: [row('System prompt', 18000, 'used'), row('Messages', 64000, 'used'), row('Free space', state.free ?? 100000, 'free'), row('Autocompact buffer', 18000, 'buffer')],
           totalTokens: 82000,
           maxTokens: 200000,
           rawMaxTokens: 200000,
@@ -83,27 +83,26 @@ const PANE = {
   props: { title: '📊 Context', isFocused: false, bodyColumns: 40, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
 } as const
 
-test('入力欄の上は 1 行で、割合・棒・使用量・キャッシュの残りを出す', async ($, on) => {
+const cells = (line: string) => [...line].reduce((sum, char) => sum + (/[ᄀ-ᅟ⺀-꓏가-힣＀-｠]|\p{Extended_Pictographic}/u.test(char) ? 2 : 1), 0)
+
+test('入力欄の上は 1 行で、評価・割合・棒・使用量・キャッシュの残りを出す', async ($, on) => {
   engine(on, 41)
   await start($)
   await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'end_turn' } as never)
 
   const ui = await $.ui.mount(BAND)
-  expect(await ui.find({ type: 'Text', text: /82k \/ 200k · キャッシュ 60 分/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /41%/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /⣿+/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /⣀+/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /会話|システム|頃合い|📌/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^◆ A {2}41% {2}▰+▱+ {2}82k \/ 200k {2}· {2}⏱ 60m$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /会話|システム|📌/ })).toBeUndefined()
   await ui.unmount()
 })
 
-test('入力欄の上: キャッシュが切れたら末尾を「キャッシュ切れ」にする', async ($, on) => {
+test('入力欄の上: キャッシュが切れたら ⏱ cold', async ($, on) => {
   const { clock } = engine(on, 41)
   await start($)
   await clock.advance(60 * MINUTE)
 
   const ui = await $.ui.mount(BAND)
-  expect(await ui.find({ type: 'Text', text: /82k \/ 200k · キャッシュ切れ/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /82k \/ 200k {2}· {2}⏱ cold$/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -112,9 +111,44 @@ test('入力欄の上: handoff の次は出さない', async ($, on) => {
   await start($)
 
   const ui = await $.ui.mount(BAND)
-  expect(await ui.find({ type: 'Text', text: /📌/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /NEXT/ })).toBeUndefined()
   await ui.unmount()
 })
+
+test('入力欄の上: 棒は最大 24 で、狭ければ縮む', async ($, on) => {
+  engine(on, 50)
+  await start($)
+
+  const wide = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 120 } })
+  expect(await wide.find({ type: 'Text', text: /^◆ A.*[▰▱]{24} {2}100k/ })).toBeDefined()
+  await wide.unmount()
+  const narrow = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 50 } })
+  const line = (await narrow.find({ type: 'Text', text: /^◆ A/ }))?.text ?? ''
+  expect(cells(line)).toBeLessThanOrEqual(50)
+  expect(line).toMatch(/[▰▱]{4,23} {2}100k/)
+  await narrow.unmount()
+})
+
+const gradeCases: [number, string][] = [
+  [140000, 'S'],
+  [139999, 'A'],
+  [100000, 'A'],
+  [99999, 'B'],
+  [60000, 'B'],
+  [59999, 'C'],
+  [30000, 'C'],
+  [29999, 'D'],
+]
+for (const [free, name] of gradeCases) {
+  test(`評価: 空き ${free} / 200000 は ${name}`, async ($, on) => {
+    engine(on, 41, 200000, false, {}, { isUsageBroken: false, free })
+    await start($)
+
+    const ui = await $.ui.mount(BAND)
+    expect(await ui.find({ type: 'Text', text: new RegExp(`^◆ ${name} `) })).toBeDefined()
+    await ui.unmount()
+  })
+}
 
 test('最後のターンの終わりからキャッシュの残りを数える（サブエージェントのターンは数えない）', async ($, on) => {
   const { clock } = engine(on, 85)
@@ -125,54 +159,66 @@ test('最後のターンの終わりからキャッシュの残りを数える�
   await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't2', agentId: 'a1', reason: 'end_turn' } as never)
 
   const ui = await $.ui.mount(BAND)
-  expect(await ui.find({ type: 'Text', text: /キャッシュ 50 分/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /⏱ 50m/ })).toBeDefined()
   await ui.unmount()
 })
 
-test('割合の色: 黄と赤の割合で変わる', async ($, on) => {
-  engine(on, 85)
+test('評価の色が付く', async ($, on) => {
+  engine(on, 41, 200000, false, {}, { isUsageBroken: false, free: 20000 })
   await start($)
 
   const ui = await $.ui.mount(BAND)
-  expect((await ui.find({ type: 'Text', text: /^85%$/ }))?.props?.color).toBe('error')
+  expect((await ui.find({ type: 'Text', text: /^◆ D$/ }))?.props?.color).toBe('#f05a5a')
   await ui.unmount()
 })
 
-test('pane: 割合・使用量・空きを出す', async ($, on) => {
+test('pane: 見出しの右端に評価、割合の棒、使用量を出す', async ($, on) => {
   engine(on, 41)
   await start($)
 
   const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /^╻ ╻ ╺┓  █ ▞$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /82k \/ 200k · 空き 100k/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^CONTEXT +GRADE A$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^41% {2}▰+▱+$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^82\.0k used · 100\.0k free · 200k$/ })).toBeDefined()
   await ui.unmount()
 })
 
-test('pane: 積み上げ棒は幅いっぱいで、種類ごとの行を多い順に出す', async ($, on) => {
+test('pane: 種類ごとの行を多い順に、名前・数・割合・棒で出す', async ($, on) => {
   engine(on, 41)
   await start($)
 
   const ui = await $.ui.mount(PANE)
-  const bar = (await ui.find({ type: 'Text', text: /^[⣿⣀]{38}$/ }))?.text ?? ''
-  expect([...bar].length).toBe(38)
-  expect(await ui.find({ type: 'Text', text: /● 会話 +64k +32%/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /● システム +18k +9%/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /⣿.*64k/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^● 会話 +64\.0k 32\.0% {2}━+─*$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^● システム +18\.0k {2}9\.0% {2}━+─*$/ })).toBeDefined()
   await ui.unmount()
 })
 
-test('pane: キャッシュの残りを出す。切れたら切れていると出す', async ($, on) => {
+test('pane: 棒は幅いっぱいで、狭くても収まる', async ($, on) => {
+  engine(on, 41)
+  await start($)
+
+  for (const columns of [40, 34]) {
+    const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: columns } })
+    const used = (await ui.find({ type: 'Text', text: /^41% / }))?.text ?? ''
+    const row = (await ui.find({ type: 'Text', text: /^● 会話/ }))?.text ?? ''
+    expect(cells(used)).toBe(Math.max(32, columns - 2))
+    expect(cells(row)).toBeLessThanOrEqual(Math.max(32, columns - 2))
+    await ui.unmount()
+  }
+})
+
+test('pane: キャッシュの残りと棒を出す。切れたら cold と空の棒', async ($, on) => {
   const { clock } = engine(on, 41)
   await start($)
-  await clock.advance(20 * MINUTE)
+  await clock.advance(30 * MINUTE)
 
   const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /^⏱ キャッシュ切れまで 40 分$/ })).toBeDefined()
+  const half = (await ui.find({ type: 'Text', text: /^CACHE {2}30m {2}━+─+$/ }))?.text ?? ''
+  expect(half.match(/━/g)?.length).toBe(half.match(/─/g)?.length)
   await ui.unmount()
-  await clock.advance(40 * MINUTE)
+  await clock.advance(30 * MINUTE)
   const again = await $.ui.mount(PANE)
-  expect(await again.find({ type: 'Text', text: /^⏱ キャッシュは切れています$/ })).toBeDefined()
-  expect(await again.find({ type: 'Text', text: /頃合い|\/clear/ })).toBeUndefined()
+  expect(await again.find({ type: 'Text', text: /^CACHE {2}cold {2}─+$/ })).toBeDefined()
   await again.unmount()
 })
 
@@ -181,8 +227,8 @@ test('次: 同じ行に並ぶ形を読む。2 つ目からは字下げする', a
   await start($)
 
   const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /^📌 次 {2}1\. 画面を直す$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^ {7}2\. テストを足す$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^NEXT {3}画面を直す$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^ {7}テストを足す$/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -191,8 +237,8 @@ test('次: 次の行から字下げして続く形を読む', async ($, on) => {
   await start($)
 
   const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /^📌 次 {2}1\. a$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^ {7}2\. b$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^NEXT {3}a$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^ {7}b$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /c$/ })).toBeUndefined()
   await ui.unmount()
 })
@@ -202,7 +248,7 @@ test('次: handoff に無ければ出さない', async ($, on) => {
   await start($)
 
   const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /📌/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /NEXT/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -212,11 +258,11 @@ test('次: handoff.md が書き換わったら消える', async ($, on) => {
   await start($)
 
   const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /📌 次/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /NEXT/ })).toBeDefined()
   await ui.unmount()
   files[HANDOFF] = { text: '- 次：1. b', mtimeMs: T0 + 1 }
   const again = await $.ui.mount(PANE)
-  expect(await again.find({ type: 'Text', text: /📌 次/ })).toBeUndefined()
+  expect(await again.find({ type: 'Text', text: /NEXT/ })).toBeUndefined()
   await again.unmount()
 })
 
@@ -228,12 +274,12 @@ test('次: /clear の後に読み直す', async ($, on) => {
   await $.classic.SessionStart({ source: 'clear' })
 
   const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /📌 次 {2}1\. a/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /NEXT {3}a/ })).toBeDefined()
   await ui.unmount()
 })
 
 test('usage が失敗したら前の値を残す', async ($, on) => {
-  const state = { isUsageBroken: false }
+  const state: { isUsageBroken: boolean; free?: number } = { isUsageBroken: false }
   engine(on, 41, 200000, false, {}, state)
   await start($)
   state.isUsageBroken = true
@@ -250,25 +296,7 @@ test('options: 寿命を変える', { options: { cacheMinutes: '5' } }, async ($
   await clock.advance(6 * MINUTE)
 
   const ui = await $.ui.mount(BAND)
-  expect(await ui.find({ type: 'Text', text: /キャッシュ切れ/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('options: 黄と赤の割合を変える', { options: { yellowAt: 30, redAt: 90 } }, async ($, on) => {
-  engine(on, 35)
-  await start($)
-
-  const ui = await $.ui.mount(BAND)
-  expect((await ui.find({ type: 'Text', text: /^35%$/ }))?.props?.color).toBe('warning')
-  await ui.unmount()
-})
-
-test('options: 赤が黄より小さければ既定に戻す', { options: { yellowAt: 70, redAt: 20 } }, async ($, on) => {
-  engine(on, 60)
-  await start($)
-
-  const ui = await $.ui.mount(BAND)
-  expect((await ui.find({ type: 'Text', text: /^60%$/ }))?.props?.color).toBe('warning')
+  expect(await ui.find({ type: 'Text', text: /⏱ cold/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -277,10 +305,10 @@ test('上限が 1M でも 1 行目が帯の幅に収まる', async ($, on) => {
   await start($)
 
   const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 60 } })
-  const line = (await ui.find({ type: 'Text', text: /●.*610k \/ 1M/ }))?.text ?? ''
-  const cells = [...line].reduce((sum, char) => sum + (/[ᄀ-ᅟ⺀-꓏가-힣＀-｠]|\p{Extended_Pictographic}/u.test(char) ? 2 : 1), 0)
+  const line = (await ui.find({ type: 'Text', text: /^◆.*610k \/ 1M/ }))?.text ?? ''
+  const total = [...line].reduce((sum, char) => sum + (/[ᄀ-ᅟ⺀-꓏가-힣＀-｠]|\p{Extended_Pictographic}/u.test(char) ? 2 : 1), 0)
   expect(line.length).toBeGreaterThan(0)
-  expect(cells).toBeLessThanOrEqual(60)
+  expect(total).toBeLessThanOrEqual(60)
   await ui.unmount()
 })
 
