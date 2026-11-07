@@ -5,12 +5,24 @@ const CREATE = ['gh', 'pr', 'create'].join(' ')
 
 type On = Parameters<TestBody>[1]
 
-const setup = (on: On, text: string, opened: string[][]) => {
+type Opening = { exitCode?: number; stderr?: string; isMissing?: boolean; toasts?: string[] }
+
+const setup = (on: On, text: string, opened: string[][], opening: Opening = {}) => {
   on('tool.call', () => ({ result: { stdout: text, stderr: '' }, text }))
   on('process.run', (_, e) => {
     opened.push([...e.argv])
-    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    if (opening.isMissing === true) throw new Error('not found')
+    return { value: { exitCode: opening.exitCode ?? 0, stdout: '', stderr: opening.stderr ?? '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
+  on('ui.toast', (_, e) => {
+    opening.toasts?.push(e.text)
+    return { value: undefined }
+  })
+}
+
+// 非同期の開く処理が終わって、toast が出るまで待つ
+const settle = async () => {
+  for (let i = 0; i < 20; i += 1) await Promise.resolve()
 }
 
 test('PR を作った URL を右に開く', async ($, on) => {
@@ -59,4 +71,24 @@ test('ほかのコマンドの URL は開かない', async ($, on) => {
   await $.tool.call({ tool: 'Bash', command: 'gh pr view 346 --json url' })
 
   expect(opened).toEqual([])
+})
+
+test('terminal-browser が見つからない時は、toast で知らせる', async ($, on) => {
+  const toasts: string[] = []
+  setup(on, `${URL}\n`, [], { isMissing: true, toasts })
+
+  await $.tool.call({ tool: 'Bash', command: `${CREATE} --title t` })
+  await settle()
+
+  expect(toasts).toEqual(['pr-browser: terminal-browser が見つかりません'])
+})
+
+test('terminal-browser が失敗した時は、理由を toast で知らせる', async ($, on) => {
+  const toasts: string[] = []
+  setup(on, `${URL}\n`, [], { exitCode: 1, stderr: 'no pane\n', toasts })
+
+  await $.tool.call({ tool: 'Bash', command: `${CREATE} --title t` })
+  await settle()
+
+  expect(toasts).toEqual(['pr-browser: 開けませんでした: no pane'])
 })
