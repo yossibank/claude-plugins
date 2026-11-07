@@ -2,7 +2,8 @@ import type { Register, Timer } from 'claude-code'
 
 import type { Phase } from '../types'
 
-import { act, clearCalls, currentActivity, currentRunning, currentSecond, endCall, forget, phaseLine, startCall, tickWhileRunning } from './activity'
+import { act, clearCalls, currentActivity, currentRunning, currentSecond, endCall, forget, phaseLine, refreshTicker, startCall } from './activity'
+import { currentWorkers, dropFinished, endAgentCall, finishWorker, reconcileWorkers, spawnWorker, startAgentCall } from './agents'
 import { statusLine, workingLine } from './band'
 import { claudeCard, contextCard, filesCard, limitCard, nextCard, nowCard, repoCard, sessionCard, tasksCard, unmeasuredCard } from './cards'
 import { draw } from './cell'
@@ -64,7 +65,19 @@ export const register: Register = (on, options) => {
 
   on('turn.start', async ($, e, next) => {
     const started = await next(e)
-    if (e.agentId === undefined) await act($, { isWorking: true, tool: null, phase: null, startedAt: null })
+    if (e.agentId === undefined) {
+      await dropFinished($)
+      await act($, { isWorking: true, tool: null, phase: null, startedAt: null })
+    }
+    return started
+  })
+
+  on('agent.spawn', async ($, e, next) => {
+    const started = await next(e)
+    if (started.agentId !== undefined) {
+      await spawnWorker($, started.agentId, e.subagentType, e.description)
+      await refreshTicker($)
+    }
     return started
   })
 
@@ -94,8 +107,8 @@ export const register: Register = (on, options) => {
             said = line
             await act($, { said, ...((await currentRunning($)).length === 0 && isThinking ? { phase: 'done' as Phase } : {}) })
           }
-        } else if (chunk.kind === 'tool' && !QUIET_TOOLS.has(chunk.name) && (await currentRunning($)).length === 0) {
-          await act($, { tool: toolName(chunk.name, e.agentId), phase: 'preparing', startedAt: null })
+        } else if (chunk.kind === 'tool' && isMain && !QUIET_TOOLS.has(chunk.name) && (await currentRunning($)).length === 0) {
+          await act($, { tool: toolName(chunk.name), phase: 'preparing', startedAt: null })
         }
         yield chunk
       }
@@ -114,26 +127,30 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     const args = e as unknown as Args
     const isShown = !QUIET_TOOLS.has(e.tool)
-    const tool = describe(args)
     const calls = isShown ? await countCall($) : 0
     const id = e.tool_use_id ?? `call-${calls}`
+    const call = { id, name: toolName(e.tool), tool: describe(args), startedAt: await $.clock.now() }
     if (isShown) {
-      const startedAt = await $.clock.now()
-      await startCall($, { id, tool, startedAt })
-      tickWhileRunning($, true)
-      await act($, { tool, phase: 'running', startedAt })
+      if (e.agentId === undefined) {
+        await startCall($, call)
+        await act($, { tool: call.tool, phase: 'running', startedAt: call.startedAt })
+      } else await startAgentCall($, e.agentId, call)
+      await refreshTicker($)
     }
     const done = await next(e).finally(async () => {
       if (!isShown) return
+      if (e.agentId !== undefined) {
+        await endAgentCall($, e.agentId, id)
+        await refreshTicker($)
+        return
+      }
       const left = await endCall($, id)
       if (left === null) return
       // まだ動いている呼び出しがあれば、最後に始まったものを出す
       const last = left.at(-1)
       if (last !== undefined) await act($, { tool: last.tool, phase: 'running', startedAt: last.startedAt })
-      else {
-        tickWhileRunning($, false)
-        await act($, { tool, phase: 'done' })
-      }
+      else await act($, { tool: call.tool, phase: 'done' })
+      await refreshTicker($)
     })
     if ('result' in done) {
       await trackTasks($, args, done.result)
@@ -173,7 +190,7 @@ export const register: Register = (on, options) => {
 
     const next = await nextOf($, config)
     if (next.length > 0) cards.push(...nextCard(next, inner))
-    cards.push(...nowCard(doing, step, inner))
+    cards.push(...nowCard(doing, step, await currentRunning($), await currentWorkers($), now, inner))
 
     const counted = await currentStats($)
     if (session.start !== null) {
@@ -200,9 +217,13 @@ export const register: Register = (on, options) => {
       await endTurn($)
       await countTurn($)
       await clearCalls($)
-      tickWhileRunning($, false)
+      await reconcileWorkers($)
+      await refreshTicker($)
       await act($, { isWorking: false, tool: null, phase: null, startedAt: null })
       await readRepo($, true)
+    } else {
+      await finishWorker($, e.agentId)
+      await refreshTicker($)
     }
     await measure($)
     return done

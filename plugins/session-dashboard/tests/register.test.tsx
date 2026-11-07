@@ -24,6 +24,7 @@ type State = {
   isVersionBroken?: boolean
   isPanesBroken?: boolean
   chunks?: readonly Record<string, unknown>[]
+  agents?: { id: string; status: string }[]
   answer?: string
 }
 
@@ -100,6 +101,12 @@ const engine = (on: On, percent: number, window = 200000, isShown = false, files
     const { Text } = $.ui.resolve(e)
     return <Text>engine</Text>
   })
+  let spawned = 0
+  on('agent.spawn', () => {
+    spawned += 1
+    return { model: 'haiku', agentId: `a${spawned}` } as never
+  })
+  on('agent.list', () => ({ value: (state.agents ?? []) as never }))
   on('turn.step', async function* (_, e) {
     for (const chunk of state.chunks ?? []) yield chunk as never
     return { turnId: e.turnId, index: e.index, answer: state.answer ?? '', toolUses: [], stopReason: 'end_turn', usage: null } as never
@@ -389,15 +396,6 @@ test('今の作業: 重なった呼び出しの片方が終わったら、残っ
   await call
 })
 
-test('今の作業: サブエージェントの呼び出しには ↳ を付ける', async ($, on) => {
-  engine(on, 41)
-  await start($)
-  await $.turn.start({ turnId: 't1', text: 'go' })
-  await $.tool.call({ tool: 'Grep', pattern: 'foo', agentId: 'a1' } as never)
-
-  expect((await lines($)).some(line => /^│ 実行 │ ✓ ↳ Grep: foo +│$/u.test(line))).toBe(true)
-})
-
 test('今の作業: 長い行は … で幅に収める', async ($, on) => {
   engine(on, 41)
   await start($)
@@ -650,4 +648,104 @@ test('pane の見張りに失敗したら、同じ失敗は 1 度だけトース
   await clock.advance(6000)
 
   expect(toasts.filter(text => /pane の見張り.*panes failed/.test(text))).toHaveLength(1)
+})
+
+const spawn = ($: Engine, description: string, subagentType = 'explorer') => $.agent.spawn({ prompt: 'p', description, subagentType } as never)
+
+test('Now: サブエージェントを起こしてから終わるまで、種類・題・経過・ツールの回数を木で出す', async ($, on) => {
+  const { clock } = engine(on, 41)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await spawn($, '処理のコードの観点で調べる')
+  await $.tool.call({ tool: 'Read', file_path: '/repo/hook_io.py', agentId: 'a1' } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/repo/b.py', agentId: 'a1' } as never)
+  await clock.advance(100_000)
+
+  const found = await lines($, 60)
+  expect(found.some(line => /│ └ explorer {2}処理のコードの観点で調べる +1m40s │$/u.test(line))).toBe(true)
+  expect(found.some(line => /│ {5}✓ Read: b\.py +ツール 2 │$/u.test(line))).toBe(true)
+
+  await $.turn.complete(done('t2', 'a1'))
+  await clock.advance(5000)
+  const ended = await lines($, 60)
+  expect(ended.some(line => /└ explorer {2}処理のコードの観点で調べる +✓ 1m40s │$/u.test(line))).toBe(true)
+  expect(ended.some(line => /ツール/.test(line))).toBe(false)
+})
+
+test('Now: 3 本を並べ、最後の 1 本は └ で閉じる。終わったものは次の turn.start で消える', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  for (const title of ['一つ目', '二つ目', '三つ目']) await spawn($, title)
+  await $.tool.call({ tool: 'Grep', pattern: 'x', agentId: 'a2' } as never)
+  await $.turn.complete(done('t2', 'a3'))
+
+  const found = await lines($, 60)
+  expect(found.some(line => /├ explorer {2}一つ目 +0s │$/u.test(line))).toBe(true)
+  expect(found.some(line => /├ explorer {2}二つ目 +0s │$/u.test(line))).toBe(true)
+  expect(found.some(line => /│ │ {3}✓ Grep: x +ツール 1 │$/u.test(line))).toBe(true)
+  expect(found.some(line => /└ explorer {2}三つ目 +✓ 0s │$/u.test(line))).toBe(true)
+
+  await $.turn.complete(done())
+  await $.turn.start({ turnId: 't3', text: 'next' })
+  const next = await lines($, 60)
+  expect(next.some(line => /三つ目/.test(line))).toBe(false)
+  expect(next.some(line => /一つ目/.test(line))).toBe(true)
+})
+
+test('Now: 失敗・停止したサブエージェントは ✗ で出す', async ($, on) => {
+  const state: State = { isUsageBroken: false, agents: [{ id: 'a1', status: 'failed' }] }
+  engine(on, 41, 200000, false, {}, state)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await spawn($, '落ちる')
+  await $.turn.complete(done('t2', 'a1'))
+
+  expect((await lines($, 60)).some(line => /└ explorer {2}落ちる +✗ 0s │$/u.test(line))).toBe(true)
+})
+
+test('Now: 5 本を超えたら、動いているものを残して「ほか N 本」にまとめる', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  for (let index = 1; index <= 7; index += 1) await spawn($, `題${index}`)
+  await $.turn.complete(done('t2', 'a1'))
+  await $.turn.complete(done('t2', 'a2'))
+  await $.turn.complete(done('t2', 'a3'))
+
+  const found = await lines($, 60)
+  expect(found.filter(line => /explorer/.test(line))).toHaveLength(5)
+  expect(found.some(line => /└ ほか 2 本 +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /題4|題7/.test(line))).toBe(true)
+})
+
+test('Now: 幅が狭ければ、右の列（経過・回数）から落とす', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await spawn($, '処理のコードの観点で調べる')
+  await $.tool.call({ tool: 'Read', file_path: '/repo/a.py', agentId: 'a1' } as never)
+
+  const found = await lines($, 24)
+  const row = found.find(line => /explorer/.test(line)) ?? ''
+  expect(row).not.toMatch(/0s/)
+  expect(row).toMatch(/… *│$/)
+  expect(found.every(line => cells(line) === 22)).toBe(true)
+})
+
+test('Now: メインで重なって動いているツールも、まとめた 1 行と木で出す', async ($, on) => {
+  const { hold, release } = holding()
+  const { clock } = engine(on, 41, 200000, false, {}, { isUsageBroken: false, hold })
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  const first = $.tool.call({ tool: 'Bash', command: 'a', description: '一つ目', tool_use_id: 'b1' } as never)
+  const second = $.tool.call({ tool: 'Bash', command: 'b', description: '二つ目', tool_use_id: 'b2' } as never)
+  await clock.advance(1000)
+  const found = await lines($, 60)
+
+  expect(found.some(line => /^│ 実行 │ ● Bash ×2 · 1s +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /├ ● Bash: 一つ目 +1s │$/u.test(line))).toBe(true)
+  expect(found.some(line => /└ ● Bash: 二つ目 +1s │$/u.test(line))).toBe(true)
+  release()
+  await Promise.all([first, second])
 })

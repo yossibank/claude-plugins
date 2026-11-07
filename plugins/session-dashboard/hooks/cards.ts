@@ -1,13 +1,14 @@
-import type { Activity, Claude, Fill, Limit, Repo, TaskItem, Touched } from '../types'
+import type { Activity, Claude, Fill, Limit, Repo, Running, TaskItem, Touched, Worker } from '../types'
 
 import type { Step } from './activity'
 import { card, changeSegs, keyWidthOf, valueWidth } from './card'
-import { cellWidth, gradient } from './cell'
+import { cellWidth, gradient, twoColumns } from './cell'
 import type { Seg } from './cell'
 import { LIMIT_NAMES } from './claude'
 import { heat, HEAT, ICON, TN } from './palette'
-import { elapsedOf, untilReset } from './time'
+import { duration, elapsedOf, untilReset } from './time'
 import { gradeOf, kilo, thousands } from './tokens'
+import { AGENT_TOOLS } from './tool'
 
 // 割合の列（空白 + 100%）の幅
 const PERCENT_COLUMNS = 5
@@ -122,11 +123,70 @@ export const nextCard = (next: readonly string[], inner: number) =>
     inner,
   )
 
-export const nowCard = (doing: Activity, step: Step | null, inner: number) => {
+// サブエージェントの本数がこれを超えたら、残りは「ほか N 本」にまとめる
+const WORKERS_SHOWN = 5
+
+// 多すぎる時は、動いているものを先に、次に最近終わったものを残す
+const shownWorkers = (workers: readonly Worker[]) => {
+  if (workers.length <= WORKERS_SHOWN) return [...workers]
+  const running = workers.filter(worker => worker.status === 'running')
+  const ended = workers.filter(worker => worker.status !== 'running').sort((x, y) => (y.endedAt ?? 0) - (x.endedAt ?? 0))
+  return [...running, ...ended].slice(0, WORKERS_SHOWN).sort((x, y) => x.startedAt - y.startedAt)
+}
+
+const WORKER_MARKS: Record<Worker['status'], Seg> = {
+  running: { text: '', color: TN.comment },
+  done: { text: '✓ ', color: TN.green },
+  failed: { text: '✗ ', color: TN.red },
+}
+
+// 木の 1 本分。2 行目は動いているツールと、ツールの回数
+const workerRows = (worker: Worker, now: number, isLast: boolean, width: number): [Seg[], Seg[]][] => {
+  const branch = isLast ? '└ ' : '├ '
+  const mark = WORKER_MARKS[worker.status]
+  const left: Seg[] = [{ text: branch, color: TN.line }, { text: worker.type === '' ? 'agent' : worker.type, color: TN.cyan }, { text: `  ${worker.title}`, color: TN.fg }]
+  const right: Seg[] = [...(mark.text === '' ? [] : [mark]), { text: duration((worker.endedAt ?? now) - worker.startedAt), color: TN.comment }]
+  const rows: [Seg[], Seg[]][] = [[[], twoColumns(left, right, width)]]
+  if (worker.status !== 'running' || worker.last === null) return rows
+  const active = worker.active.at(-1)
+  const step: Seg[] =
+    active === undefined
+      ? [{ text: '✓ ', color: TN.green }, { text: worker.last, color: TN.comment }]
+      : [{ text: '● ', color: TN.yellow }, { text: `${active.tool} · ${Math.max(0, Math.floor((now - active.startedAt) / 1000))}s`, color: TN.fg }]
+  rows.push([[], twoColumns([{ text: isLast ? '    ' : '│   ', color: TN.line }, ...step], [{ text: `ツール ${worker.calls}`, color: TN.comment }], width)])
+  return rows
+}
+
+// メインで重なって動いているツール。サブエージェントを起こすものは、サブエージェントの側に出す
+const callRow = (call: Running, now: number, isLast: boolean, width: number): [Seg[], Seg[]] => [
+  [],
+  twoColumns([{ text: isLast ? '└ ' : '├ ', color: TN.line }, { text: '● ', color: TN.yellow }, { text: call.tool, color: TN.fg }], [{ text: duration(now - call.startedAt), color: TN.comment }], width),
+]
+
+// 重なって動くツールをまとめた 1 行。同じ名前なら Agent ×3
+const groupStep = (calls: readonly Running[], now: number): Step => {
+  const name = calls.every(call => call.name === calls[0]?.name) ? (calls[0]?.name ?? '') : '並行'
+  const oldest = Math.min(...calls.map(call => call.startedAt))
+  return { mark: '● ', text: `${name} ×${calls.length} · ${duration(now - oldest)}`, color: TN.fg }
+}
+
+export const nowCard = (doing: Activity, step: Step | null, calls: readonly Running[], workers: readonly Worker[], now: number, inner: number) => {
   const summary = doing.task ?? doing.said
   const rows: [Seg[], Seg[]][] = [[[{ text: '作業', color: TN.comment }], [{ text: summary ?? '待っています', color: doing.isWorking ? TN.fg : TN.comment }]]]
-  if (doing.isWorking && step !== null) rows.push([[{ text: '実行', color: TN.comment }], stepSegs(step)])
-  else if (!doing.isWorking && summary !== null) rows.push([[{ text: '状態', color: TN.comment }], [{ text: '待っています', color: TN.comment }]])
+  const shownStep = doing.isWorking && calls.length >= 2 ? groupStep(calls, now) : step
+  if (doing.isWorking && shownStep !== null) rows.push([[{ text: '実行', color: TN.comment }], stepSegs(shownStep)])
+  else if (!doing.isWorking && (summary !== null || workers.length > 0)) rows.push([[{ text: '状態', color: TN.comment }], [{ text: '待っています', color: TN.comment }]])
+
+  const width = valueWidth(inner, keyWidthOf(rows))
+  const crew = shownWorkers(workers)
+  const hidden = workers.length - crew.length
+  const others = doing.isWorking && calls.length >= 2 ? calls.filter(call => !AGENT_TOOLS.has(call.name)) : []
+  const count = crew.length + others.length + (hidden > 0 ? 1 : 0)
+  let at = 0
+  const isLast = () => (at += 1) === count
+  for (const worker of crew) rows.push(...workerRows(worker, now, isLast(), width))
+  for (const call of others) rows.push(callRow(call, now, isLast(), width))
+  if (hidden > 0) rows.push([[], twoColumns([{ text: '└ ', color: TN.line }, { text: `ほか ${hidden} 本`, color: TN.comment }], [], width)])
   return card([{ text: `${ICON.now} Now`, color: TN.yellow, bold: true }], rows, inner)
 }
 

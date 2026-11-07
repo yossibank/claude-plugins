@@ -1,5 +1,7 @@
 // 2 行目に出さない、作業の中身を表さないツール
 export const QUIET_TOOLS = new Set(['TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList', 'TodoWrite', 'ToolSearch'])
+// サブエージェントを起こすツール。動きは agents に持つ
+export const AGENT_TOOLS = new Set(['Agent', 'Task'])
 export const GIT_TOOLS = new Set(['Bash', 'Edit', 'Write', 'NotebookEdit'])
 export const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit'])
 
@@ -48,11 +50,8 @@ export const describe = (e: Args) => {
   })()
   const name = tool.startsWith('mcp__') ? (tool.split('__').pop() ?? tool) : tool
   const line = detail === '' ? name : `${name}: ${detail.split('\n')[0]}`
-  return e.agentId === undefined ? line : `↳ ${line}`
+  return line
 }
 
 // 名前だけの 1 行。準備中のツールに使う
-export const toolName = (tool: string, agentId: string | undefined) => {
-  const name = tool.startsWith('mcp__') ? (tool.split('__').pop() ?? tool) : tool
-  return agentId === undefined ? name : `↳ ${name}`
-}
+export const toolName = (tool: string) => (tool.startsWith('mcp__') ? (tool.split('__').pop() ?? tool) : tool)

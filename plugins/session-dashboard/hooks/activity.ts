@@ -4,6 +4,7 @@ import type { EngineInterface, Timer } from 'claude-code'
 import type { Activity, Running } from '../types'
 
 import { TN } from './palette'
+import { clearWorkers, currentWorkers } from './agents'
 import { report } from './report'
 import { currentTasks, resetTasks, taskLineOf } from './tasks'
 
@@ -26,7 +27,7 @@ export async function act($: EngineInterface, change: Partial<Activity>) {
 }
 
 // 動いているツールの呼び出し。重なった呼び出しを、始まった順に持つ
-const running = atom({ plugin: 'session-dashboard', key: 'running' } as const, [] as Running[])
+const running = atom({ plugin: 'session-dashboard', key: 'running' } as const, [] as Running[], { shape: 'running-2' })
 
 export async function currentRunning($: EngineInterface) {
   return read($, running)
@@ -81,9 +82,16 @@ export const phaseLine = (doing: Activity, now: number): Step | null => {
   return { mark: '✓ ', text: doing.tool, color: TN.comment }
 }
 
+// 動いているツールかサブエージェントがある間だけ、1 秒ごとに描き直す
+export async function refreshTicker($: EngineInterface) {
+  const isRunning = (await currentRunning($)).length > 0 || (await currentWorkers($)).some(worker => worker.status === 'running')
+  tickWhileRunning($, isRunning)
+}
+
 export async function forget($: EngineInterface) {
   await resetTasks($)
   await clearCalls($)
+  await clearWorkers($)
   tickWhileRunning($, false)
   await update($, activity, () => IDLE)
 }
