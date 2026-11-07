@@ -5,11 +5,11 @@ type On = Parameters<TestBody>[1]
 const PASSED_LOG = '\x1b[32m✔\x1b[0m a() (0.1 seconds)\n    \x1b[32m✔\x1b[0m b() (0.1 seconds)\n\x1b[32;1mTest Succeeded\x1b[0m\n'
 const FAILED_LOG = '    ✔ a() (0.1 seconds)\n    ✖ monthTotalsSkipFuture(), Expectation failed\nTest Failed\n'
 
-const engine = (on: On, log: string, seen: { toasts: string[]; reads: string[]; store: Map<string, unknown> }, cwd = '/repo', mtimeMs = 1_000_000, isClockOwn = false) => {
+const engine = (on: On, log: string, seen: { toasts: string[]; reads: string[]; store: Map<string, unknown> }, cwd = '/repo', mtimeMs = 1_000_000, isClockOwn = false, isLogMissing = false, deny: Record<string, unknown> = {}) => {
   on('session.cwd', () => ({ value: cwd }))
-  on('tool.call', () => ({ result: { stdout: '', stderr: '' }, text: '' }))
+  on('tool.call', () => ('deny' in deny ? deny : { result: { stdout: '', stderr: '' }, text: '' }))
   if (!isClockOwn) on('clock.now', () => ({ value: 1_000_000 }))
-  on('fs.exists', () => ({ value: true }))
+  on('fs.exists', () => ({ value: !isLogMissing }))
   on('fs.stat', () => ({ value: { mtimeMs } as never }))
   on('fs.read', (_, e) => {
     seen.reads.push(e.path)
@@ -187,4 +187,34 @@ test('ログが 5 分変わらないと、帯を消して止める', async ($, o
   expect(await shown()).toBe(false)
   expect(seen.toasts).toEqual([])
   expect(seen.store.get('total:make test')).toBe(10)
+})
+
+test('ログを一度も読めないまま終わったら、通ったとは言わずログが無いと知らせる', async ($, on) => {
+  const seen = fresh()
+  engine(on, PASSED_LOG, seen, '/repo', 1_000_000, false, true)
+
+  await $.tool.call({ tool: 'Bash', command: 'make test' })
+
+  expect(seen.reads).toEqual([])
+  expect(seen.toasts).toEqual(['⚠ make test は終わったが、ログが見つからなかった（終了コードは成功） · 0:00'])
+  expect(seen.store.get('total:make test')).toBeUndefined()
+})
+
+test('ログが古いまま終わった時も、通ったとは言わない', async ($, on) => {
+  const seen = fresh()
+  engine(on, PASSED_LOG, seen, '/repo', 0)
+
+  await $.tool.call({ tool: 'Bash', command: 'make test' })
+
+  expect(seen.toasts).toEqual(['⚠ make test は終わったが、ログが見つからなかった（終了コードは成功） · 0:00'])
+})
+
+test('実行を拒まれた時は、トーストを出さずに帯だけを消す', async ($, on) => {
+  const seen = fresh()
+  engine(on, PASSED_LOG, seen, '/repo', 1_000_000, false, false, { deny: 'no' })
+
+  await $.tool.call({ tool: 'Bash', command: 'make test' })
+
+  expect(seen.toasts).toEqual([])
+  expect(seen.store.get('total:make test')).toBeUndefined()
 })

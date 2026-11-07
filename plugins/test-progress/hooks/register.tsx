@@ -91,7 +91,7 @@ const clock = (ms: number) => {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 }
 
-const finish = async ($: EngineInterface, isPassed: boolean, isLearnt: boolean) => {
+const finish = async ($: EngineInterface, isPassed: boolean, isLearnt: boolean, isUnread: boolean) => {
   const last = await read($, run)
   if (last === null) return
   const took = last.now - last.startedAt
@@ -100,6 +100,10 @@ const finish = async ($: EngineInterface, isPassed: boolean, isLearnt: boolean) 
     await $.store.set(`durationMs:${last.label}`, took)
   }
   await update($, run, () => null)
+  if (isUnread) {
+    $.ui.toast(`⚠ ${last.label} は終わったが、ログが見つからなかった（終了コードは${isPassed ? '成功' : '失敗'}） · ${clock(took)}`)
+    return
+  }
   $.ui.toast(
     isPassed && last.failed.length === 0
       ? `✔ ${last.label} ${last.passed} 本通った · ${clock(took)}`
@@ -149,7 +153,7 @@ const watch = async ($: EngineInterface, spec: Watched, log: string, label: stri
     isDone = true
     timer.cancel()
     if (result === 'given-up' || result === 'stalled') await update($, run, () => null)
-    else await finish($, result === 'passed' || result === 'exited-ok', result === 'passed')
+    else await finish($, result === 'passed' || result === 'exited-ok' || result === 'unread-ok', result === 'passed', result.startsWith('unread-'))
   }
   const timer = $.clock.every(POLL_MS, () => {
     if (isBusy || isDone) return
@@ -160,10 +164,12 @@ const watch = async ($: EngineInterface, spec: Watched, log: string, label: stri
         isBusy = false
       })
   })
-  return async (isPassed: boolean) => {
+  return async (isPassed: boolean, isDenied = false) => {
     if (isDone) return
+    if (isDenied) return stop('given-up')
     const result = await tick($, spec, log, startedAt, pulse)
-    await stop(result === 'running' ? (isPassed ? 'exited-ok' : 'exited-ng') : result)
+    const exited = isPassed ? 'ok' : 'ng'
+    await stop(result !== 'running' ? result : pulse.mtimeMs === 0 ? `unread-${exited}` : `exited-${exited}`)
   }
 }
 
@@ -181,7 +187,7 @@ export const register: Register = (on, options) => {
 
     const end = await watch($, spec, found.log, found.label)
     const ran = await next(e)
-    if (e.run_in_background !== true) await end(ran.deny === undefined && ran.isError !== true)
+    if (e.run_in_background !== true) await end(ran.deny === undefined && ran.isError !== true, ran.deny !== undefined)
     return ran
   })
 
