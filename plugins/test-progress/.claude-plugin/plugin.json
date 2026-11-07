@@ -1,19 +1,19 @@
 {
   "name": "test-progress",
   "version": "0.1.0",
-  "description": "make test の間、進みの棒と落ちたテストを入力欄の上に出し、終わったらトーストで知らせる",
+  "description": "テストのコマンドの間、進みの棒と落ちたテストを入力欄の上に出し、終わったらトーストで知らせる",
   "types": "./types/index.d.ts",
   "userConfig": {
-    "target": {
+    "commandPattern": {
       "type": "string",
-      "title": "見張る make のターゲット",
-      "description": "この名前のターゲットを make に渡した Bash の呼び出しを見張る",
-      "default": "test"
+      "title": "見張るコマンドの正規表現",
+      "description": "Bash のコマンドの区切りごとに当てる正規表現。当たった文字を帯とトーストに出す",
+      "default": "\\bmake\\b(?:.*\\s)?test(?=\\s|$)"
     },
     "logPath": {
       "type": "string",
       "title": "ログの置き場",
-      "description": "make を動かすフォルダからの相対パス。絶対パスも使える。コマンドが tee で書き込む先",
+      "description": "コマンドを動かすフォルダからの相対パス。絶対パスも使える。コマンドが tee で書き込む先",
       "default": ".build/test.log"
     },
     "passedLine": {

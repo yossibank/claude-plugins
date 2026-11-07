@@ -1,4 +1,5 @@
 export type TestRun = {
+  label: string
   startedAt: number
   now: number
   passed: number

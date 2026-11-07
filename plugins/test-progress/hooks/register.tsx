@@ -5,7 +5,7 @@ import type { TestRun } from '../types'
 
 const ANSI = /\x1b\[[0-9;]*m/g
 const DEFAULTS = {
-  target: 'test',
+  commandPattern: '\\bmake\\b(?:.*\\s)?test(?=\\s|$)',
   logPath: '.build/test.log',
   passedLine: '^\\s*✔\\s',
   failedLine: '^\\s*✖\\s+(.+?)(?:\\s+\\(\\d|,\\s|$)',
@@ -19,7 +19,7 @@ const SHOWN_FAILURES = 3
 const SIDE_COLUMNS = 34
 
 type Watched = {
-  target: string
+  command: RegExp
   logPath: string
   passed: RegExp
   failed: RegExp
@@ -38,7 +38,7 @@ const pattern = (value: unknown, fallback: string) => {
 }
 
 const watched = (options: Readonly<Record<string, unknown>>): Watched => ({
-  target: text(options.target, DEFAULTS.target),
+  command: pattern(options.commandPattern, DEFAULTS.commandPattern),
   logPath: text(options.logPath, DEFAULTS.logPath),
   passed: pattern(options.passedLine, DEFAULTS.passedLine),
   failed: pattern(options.failedLine, DEFAULTS.failedLine),
@@ -46,12 +46,13 @@ const watched = (options: Readonly<Record<string, unknown>>): Watched => ({
   succeeded: pattern(options.succeededLine, DEFAULTS.succeededLine),
 })
 
-const run = atom({ plugin: 'test-progress', key: 'run' } as const, null, { shape: 'run-1' })
+const run = atom({ plugin: 'test-progress', key: 'run' } as const, null, { shape: 'run-2' })
 
 const join = (...parts: string[]) => parts.join('/').replace(/\/+/g, '/')
 
 const place = (base: string, dir: string) => (dir.startsWith('/') ? dir : join(base, dir))
 
+// コマンドの区切りごとに cd で基点を動かし、見張るコマンドに当たった区切りのログの置き場と、帯に出す名前を返す
 const testLog = (command: string, cwd: string, spec: Watched) => {
   let base = cwd
   for (const segment of command.split(/&&|\|\||[;|\n]/)) {
@@ -61,19 +62,12 @@ const testLog = (command: string, cwd: string, spec: Watched) => {
       if (next !== '' && next !== '-' && !next.startsWith('~') && !next.startsWith('$')) base = place(base, next)
       continue
     }
-    const at = words.indexOf('make')
-    if (at < 0) continue
-    let dir = base
-    const targets: string[] = []
-    for (let i = at + 1; i < words.length; i += 1) {
-      const word = words[i] ?? ''
-      if (word === '-C') {
-        dir = place(base, words[i + 1] ?? '.')
-        i += 1
-      } else if (!word.startsWith('-') && !word.includes('=') && !word.startsWith('>')) targets.push(word)
-      else if (word.startsWith('>')) break
-    }
-    if (targets.includes(spec.target)) return place(dir, spec.logPath)
+    const isMake = /\bmake\b/.test(segment)
+    const hit = (isMake ? segment.replace(/\s-C\s*\S+/g, '') : segment).match(spec.command)
+    if (hit === null) continue
+    const into = isMake ? segment.match(/\s-C\s*(\S+)/)?.[1] : undefined
+    const dir = into === undefined ? base : place(base, into.replace(/^['"]|['"]$/g, ''))
+    return { log: place(dir, spec.logPath), label: hit[0].trim() || segment.trim() }
   }
   return undefined
 }
@@ -97,19 +91,19 @@ const clock = (ms: number) => {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 }
 
-const finish = async ($: EngineInterface, spec: Watched, isPassed: boolean, isLearnt: boolean) => {
+const finish = async ($: EngineInterface, isPassed: boolean, isLearnt: boolean) => {
   const last = await read($, run)
   if (last === null) return
   const took = last.now - last.startedAt
   if (isLearnt && last.passed + last.failed.length >= 1) {
-    await $.store.set('total', last.passed + last.failed.length)
-    await $.store.set('durationMs', took)
+    await $.store.set(`total:${last.label}`, last.passed + last.failed.length)
+    await $.store.set(`durationMs:${last.label}`, took)
   }
   await update($, run, () => null)
   $.ui.toast(
     isPassed && last.failed.length === 0
-      ? `✔ make ${spec.target} ${last.passed} 本通った · ${clock(took)}`
-      : `✖ make ${spec.target} ${last.failed.length} 本落ちた · ${clock(took)}`,
+      ? `✔ ${last.label} ${last.passed} 本通った · ${clock(took)}`
+      : `✖ ${last.label} ${last.failed.length} 本落ちた · ${clock(took)}`,
   )
 }
 
@@ -134,11 +128,12 @@ const tick = async ($: EngineInterface, spec: Watched, log: string, startedAt: n
   return idle()
 }
 
-const watch = async ($: EngineInterface, spec: Watched, log: string) => {
+const watch = async ($: EngineInterface, spec: Watched, log: string, label: string) => {
   const startedAt = await $.clock.now()
-  const total = await $.store.get('total')
-  const lastMs = await $.store.get('durationMs')
+  const total = await $.store.get(`total:${label}`)
+  const lastMs = await $.store.get(`durationMs:${label}`)
   await update($, run, () => ({
+    label,
     startedAt,
     now: startedAt,
     passed: 0,
@@ -154,7 +149,7 @@ const watch = async ($: EngineInterface, spec: Watched, log: string) => {
     isDone = true
     timer.cancel()
     if (result === 'given-up' || result === 'stalled') await update($, run, () => null)
-    else await finish($, spec, result === 'passed' || result === 'exited-ok', result === 'passed')
+    else await finish($, result === 'passed' || result === 'exited-ok', result === 'passed')
   }
   const timer = $.clock.every(POLL_MS, () => {
     if (isBusy || isDone) return
@@ -181,10 +176,10 @@ export const register: Register = (on, options) => {
   const spec = watched(options)
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-    const log = testLog(e.command, await $.session.cwd(), spec)
-    if (log === undefined) return next(e)
+    const found = testLog(e.command, await $.session.cwd(), spec)
+    if (found === undefined) return next(e)
 
-    const end = await watch($, spec, log)
+    const end = await watch($, spec, found.log, found.label)
     const ran = await next(e)
     if (e.run_in_background !== true) await end(ran.deny === undefined && ran.isError !== true)
     return ran
@@ -206,7 +201,7 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="column">
         <Text>
-          <Text bold>🧪 make {spec.target}  </Text>
+          <Text bold>🧪 {current.label}  </Text>
           {drawn !== null && (
             <Text>
               <Text dimColor>▕</Text>
