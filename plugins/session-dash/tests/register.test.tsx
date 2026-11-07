@@ -477,3 +477,68 @@ test('右の pane が見えている間は、入力欄の上に帯を出さな�
   expect(await ui.find({ type: 'Text', text: /engine/ })).toBeDefined()
   await ui.unmount()
 })
+
+test('Session: 経った時間・ターン・呼び出しの数と、1 時間あたりの費用を出す', async ($, on) => {
+  const { clock } = engine(on, 41)
+  await start($)
+  expect((await lines($)).some(line => /│ calls +│ 0 · — +│$/u.test(line))).toBe(true)
+
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await $.tool.call({ tool: 'Bash', command: 'ls', description: '一覧' } as never)
+  await $.tool.call({ tool: 'TaskList' } as never)
+  await $.turn.complete(done())
+  await clock.advance(30 * MINUTE)
+
+  const found = await lines($)
+  expect(found.some(line => /│ time +│ 30m · 1 turns +│$/u.test(line))).toBe(true)
+  // 始めた時の $1.236 から増えていないので $0.00/h
+  expect(found.some(line => /│ calls +│ 1 · \$0\.00\/h +│$/u.test(line))).toBe(true)
+})
+
+test('Tasks: 一覧を済み・作業中・まだの印と、済みの数で出す', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.tool.call({ tool: 'TodoWrite', todos: [
+    { content: '原因を確かめる', activeForm: '確かめています', status: 'completed' },
+    { content: '直す', activeForm: '直しています', status: 'in_progress' },
+    { content: 'テストを通す', activeForm: '通しています', status: 'pending' },
+  ] } as never)
+
+  const found = await lines($)
+  expect(found.some(line => /Tasks 1\/3/.test(line))).toBe(true)
+  expect(found.some(line => /│ ✓ │ 原因を確かめる +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /│ ● │ 直す +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /│ · │ テストを通す +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /│ 作業 │ 直しています +│$/u.test(line))).toBe(true)
+})
+
+test('Tasks: 消した Task は一覧から外し、多すぎれば古い済みのものから落とす', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.tool.call({ tool: 'TodoWrite', todos: Array.from({ length: 10 }, (_, index) => ({ content: `項目${index}`, status: index < 3 ? 'completed' : 'pending' })) } as never)
+
+  const found = await lines($)
+  expect(found.some(line => /項目0|項目1 /.test(line))).toBe(false)
+  expect(found.some(line => /│ ✓ │ 項目2 +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /│ · │ 項目9 +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /\+2 ─╯$/u.test(line))).toBe(true)
+
+  await working($)
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'deleted' } as never)
+  expect((await lines($)).some(line => /画面を直す/.test(line))).toBe(false)
+})
+
+test('Files: 書き換えたファイルを新しい順に、回数とフォルダを添えて出す', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.tool.call({ tool: 'Edit', file_path: '/repo/hooks/a.ts' } as never)
+  await $.tool.call({ tool: 'Write', file_path: '/repo/b.md' } as never)
+  await $.tool.call({ tool: 'Edit', file_path: '/repo/hooks/a.ts' } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/repo/c.ts' } as never)
+
+  const found = await lines($)
+  const at = (pattern: RegExp) => found.findIndex(line => pattern.test(line))
+  expect(at(/│ ×2 │ a\.ts hooks +│$/u)).toBeGreaterThan(-1)
+  expect(at(/│ ×1 │ b\.md repo +│$/u)).toBeGreaterThan(at(/a\.ts hooks/))
+  expect(found.some(line => /c\.ts/.test(line) && /×/.test(line))).toBe(false)
+})

@@ -18,7 +18,7 @@
     {
       "name": "session-dash",
       "source": "./plugins/session-dash",
-      "description": "モデル・版・費用・リポジトリ・利用の上限・今の作業・文脈の埋まり具合を右の pane に出し、閉じている間は入力欄の上に出す"
+      "description": "モデル・版・費用・リポジトリ・利用の上限・今の作業・文脈の埋まり具合・セッションの時間と回数・作業の一覧・書き換えたファイルを右の pane に出し、閉じている間は入力欄の上に出す"
     },
     {
       "name": "test-progress",

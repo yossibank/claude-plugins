@@ -28,6 +28,16 @@ export type Activity = {
   startedAt?: number | null
 }
 
+export type TaskStatus = 'pending' | 'in_progress' | 'completed'
+
+export type TaskItem = { id: string; subject: string; activeForm?: string; status: TaskStatus }
+
+export type Tasks = { items: TaskItem[]; current: string | null }
+
+export type Touched = { path: string; count: number }
+
+export type Stats = { turns: number; calls: number; usdAtStart: number | null }
+
 declare module 'claude-code' {
   interface PluginState {
     'session-dash': {
@@ -41,6 +51,9 @@ declare module 'claude-code' {
       repo: Repo | null
       activity: Activity
       second: number
+      tasks: Tasks
+      files: Touched[]
+      stats: Stats
     }
   }
 }

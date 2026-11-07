@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PluginOptions, Register, Timer } from 'claude-code'
 
-import type { Activity, Claude, Fill, Limit, Phase, Repo, Upcoming } from '../types'
+import type { Activity, Claude, Fill, Limit, Phase, Repo, Stats, TaskItem, Tasks, Touched, Upcoming } from '../types'
 
 const NEXT_LINE = /^\s*[-*]\s*次[：:]\s*(.*)$/
 const NEXT_ITEM = /(?:^|\s)\d+[.．]\s+/
@@ -44,6 +44,9 @@ const ICON = {
   cache: '\u{F01BC}',
   next: '\uf04e',
   now: '\u{F140B}',
+  session: '\uf017',
+  tasks: '\uf046',
+  files: '\uf040',
 }
 const GRADES = [
   { name: 'S', from: 0.7, color: '#7ee0ff' },
@@ -77,12 +80,24 @@ const repo = atom({ plugin: 'session-dash', key: 'repo' } as const, null)
 const IDLE: Activity = { isWorking: false, task: null, said: null, tool: null, phase: null, startedAt: null }
 const activity = atom({ plugin: 'session-dash', key: 'activity' } as const, IDLE)
 const second = atom({ plugin: 'session-dash', key: 'second' } as const, 0)
+const NO_TASKS: Tasks = { items: [], current: null }
+const tasks = atom({ plugin: 'session-dash', key: 'tasks' } as const, NO_TASKS)
+const files = atom({ plugin: 'session-dash', key: 'files' } as const, [] as Touched[])
+const NO_STATS: Stats = { turns: 0, calls: 0, usdAtStart: null }
+const stats = atom({ plugin: 'session-dash', key: 'stats' } as const, NO_STATS)
 
 const GIT_MS = 2000
 const LIMIT_NAMES: Record<string, string> = { five_hour: '5h', seven_day: '7d', spend_limit: '$' }
 // 2 行目に出さない、作業の中身を表さないツール
 const QUIET_TOOLS = new Set(['TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList', 'TodoWrite', 'ToolSearch'])
 const GIT_TOOLS = new Set(['Bash', 'Edit', 'Write', 'NotebookEdit'])
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit'])
+// 覚えておく、書き換えたファイルの数と、出す数
+const FILES_KEPT = 20
+const FILES_SHOWN = 5
+const TASKS_SHOWN = 8
+// 1 時間あたりの費用を出すまでの分数
+const RATE_MINUTES = 5
 
 const thousands = (tokens: number) => {
   if (tokens >= 1_000_000) return `${Number((tokens / 1_000_000).toFixed(1))}M`
@@ -194,6 +209,8 @@ const begin = async ($: EngineInterface, config: Config) => {
   const found = await readUpcoming($, config)
   await update($, sessionStart, () => now)
   await update($, lastTurnEnd, () => null)
+  await update($, stats, () => NO_STATS)
+  await update($, files, () => [])
   await update($, upcoming, () => found)
 }
 
@@ -271,6 +288,8 @@ const readClaude = async ($: EngineInterface) => {
     limits: usage === undefined ? (before?.limits ?? []) : limitsOf(usage.rateLimits),
   }
   await update($, claude, () => next)
+  // 始めた時の費用を覚え、1 時間あたりの費用をこのセッションの分だけで出す
+  await update($, stats, now => (now.usdAtStart === null && next.usd !== null ? { ...now, usdAtStart: next.usd } : now))
 }
 
 // origin の URL から owner/repo を取る
@@ -362,12 +381,8 @@ const describe = (e: Args) => {
   return e.agentId === undefined ? line : `↳ ${line}`
 }
 
-type Task = { subject: string; activeForm?: string }
-const tasks = new Map<string, Task>()
-let current: string | null = null
-
-const taskLine = () => {
-  const task = current === null ? undefined : tasks.get(current)
+const taskLineOf = (list: Tasks) => {
+  const task = list.items.find(item => item.id === list.current)
   return task === undefined ? null : task.activeForm || task.subject || null
 }
 
@@ -376,27 +391,51 @@ const pick = (e: Args, key: 'subject' | 'activeForm') => {
   return value === undefined ? {} : { [key]: value }
 }
 
-// TaskCreate・TaskUpdate・TodoWrite から作業中の項目を追う
-const track = (e: Args, result: unknown) => {
+type Todo = { content?: string; activeForm?: string; status?: string }
+
+const statusOf = (status: string | undefined): TaskItem['status'] => (status === 'in_progress' || status === 'completed' ? status : 'pending')
+
+// TaskCreate・TaskUpdate・TodoWrite から、作業の一覧と作業中の項目を追う
+const trackOf = (list: Tasks, e: Args, result: unknown): Tasks => {
   if (e.tool === 'TaskCreate') {
     const id = (result as { task?: { id?: string } } | undefined)?.task?.id
     const subject = textOf(e, 'subject')
-    if (id !== undefined && subject !== undefined) tasks.set(id, { subject, ...pick(e, 'activeForm') })
-  } else if (e.tool === 'TaskUpdate') {
-    const id = textOf(e, 'taskId')
-    if (id === undefined) return
-    tasks.set(id, { subject: '', ...tasks.get(id), ...pick(e, 'subject'), ...pick(e, 'activeForm') })
-    const status = textOf(e, 'status')
-    if (status === 'in_progress') current = id
-    else if ((status === 'completed' || status === 'deleted') && current === id) current = null
-  } else if (e.tool === 'TodoWrite' && Array.isArray(e.todos)) {
-    const doing = (e.todos as { content?: string; activeForm?: string; status?: string }[]).find(todo => todo.status === 'in_progress')
-    if (doing !== undefined) tasks.set('todo', { subject: doing.content ?? '', ...(doing.activeForm === undefined ? {} : { activeForm: doing.activeForm }) })
-    current = doing === undefined ? null : 'todo'
+    if (id === undefined || subject === undefined) return list
+    return { ...list, items: [...list.items.filter(item => item.id !== id), { id, subject, ...pick(e, 'activeForm'), status: 'pending' }] }
   }
+  if (e.tool === 'TaskUpdate') {
+    const id = textOf(e, 'taskId')
+    if (id === undefined) return list
+    const status = textOf(e, 'status')
+    if (status === 'deleted') return { items: list.items.filter(item => item.id !== id), current: list.current === id ? null : list.current }
+    const before = list.items.find(item => item.id === id)
+    const item: TaskItem = { subject: '', status: 'pending', ...before, id, ...pick(e, 'subject'), ...pick(e, 'activeForm'), ...(status === undefined ? {} : { status: statusOf(status) }) }
+    const items = before === undefined ? [...list.items, item] : list.items.map(found => (found.id === id ? item : found))
+    const current = status === 'in_progress' ? id : status === 'completed' && list.current === id ? null : list.current
+    return { items, current }
+  }
+  if (e.tool === 'TodoWrite' && Array.isArray(e.todos)) {
+    const items = (e.todos as Todo[]).map((todo, index): TaskItem => ({
+      id: `todo-${index}`,
+      subject: todo.content ?? '',
+      ...(todo.activeForm === undefined ? {} : { activeForm: todo.activeForm }),
+      status: statusOf(todo.status),
+    }))
+    return { items, current: items.find(item => item.status === 'in_progress')?.id ?? null }
+  }
+  return list
 }
 
-const act = ($: EngineInterface, change: Partial<Activity>) => update($, activity, now => ({ ...now, ...change, task: taskLine() }))
+const act = async ($: EngineInterface, change: Partial<Activity>) => {
+  const task = taskLineOf(await read($, tasks))
+  await update($, activity, now => ({ ...now, ...change, task }))
+}
+
+// 書き換えたファイルを、新しい順に回数と並べる
+const touch = (list: readonly Touched[], path: string): Touched[] => {
+  const before = list.find(item => item.path === path)
+  return [{ path, count: (before?.count ?? 0) + 1 }, ...list.filter(item => item.path !== path)].slice(0, FILES_KEPT)
+}
 
 // 名前だけの 1 行。準備中のツールに使う
 const toolName = (tool: string, agentId: string | undefined) => {
@@ -432,8 +471,7 @@ const phaseLine = (doing: Activity, now: number): { mark: string; text: string; 
 }
 
 const forget = async ($: EngineInterface) => {
-  tasks.clear()
-  current = null
+  await update($, tasks, () => NO_TASKS)
   running.clear()
   tickWhileRunning($, false)
   await update($, activity, () => IDLE)
@@ -529,6 +567,31 @@ const changeSegs = (git: Repo, palette: { green: string; red: string; yellow: st
     ...(git.untracked > 0 ? [{ text: `?${git.untracked}`, color: palette.yellow }] : []),
   ]
   return parts.length === 0 ? [{ text: 'なし', color: palette.comment }] : parts.flatMap((part, index) => (index === 0 ? [part] : [{ text: ' ' }, part]))
+}
+
+// 経った時間を 1h12m・12m の形にする
+const elapsedOf = (ms: number) => {
+  const minutes = Math.max(0, Math.floor(ms / 60_000))
+  const hours = Math.floor(minutes / 60)
+  return hours > 0 ? `${hours}h${String(minutes % 60).padStart(2, '0')}m` : `${minutes}m`
+}
+
+const TASK_MARKS: Record<TaskItem['status'], Seg> = {
+  completed: { text: '✓', color: TN.green },
+  in_progress: { text: '●', color: TN.yellow },
+  pending: { text: '·', color: TN.comment },
+}
+
+const TASK_COLORS: Record<TaskItem['status'], string> = { completed: TN.comment, in_progress: TN.fg, pending: TN.fgDark }
+
+// 多すぎる時は、古い済みのものから落とす
+const shownTasks = (items: readonly TaskItem[]) => {
+  const dropped = new Set<TaskItem>()
+  for (const item of items) {
+    if (items.length - dropped.size <= TASKS_SHOWN) break
+    if (item.status === 'completed') dropped.add(item)
+  }
+  return items.filter(item => !dropped.has(item)).slice(-TASKS_SHOWN)
 }
 
 const stepSegs = (step: { mark: string; text: string; color: string }): Seg[] => [
@@ -628,6 +691,7 @@ export const register: Register = (on, options) => {
     const id = e.tool_use_id ?? `call-${callCount}`
     const tool = describe(args)
     if (isShown) {
+      await update($, stats, now => ({ ...now, calls: now.calls + 1 }))
       running.set(id, { tool, startedAt: await $.clock.now() })
       tickWhileRunning($, true)
       await act($, { tool, phase: 'running', startedAt: running.get(id)!.startedAt })
@@ -643,7 +707,9 @@ export const register: Register = (on, options) => {
       }
     })
     if ('result' in done) {
-      track(args, done.result)
+      await update($, tasks, now => trackOf(now, args, done.result))
+      const path = textOf(args, 'file_path') ?? textOf(args, 'notebook_path')
+      if (EDIT_TOOLS.has(e.tool) && path !== undefined) await update($, files, now => touch(now, path))
       if (QUIET_TOOLS.has(e.tool)) await act($, {})
       if (GIT_TOOLS.has(e.tool)) await readRepo($)
     }
@@ -760,6 +826,55 @@ export const register: Register = (on, options) => {
     else if (!doing.isWorking && summary !== null) nowRows.push([[{ text: '状態', color: TN.comment }], [{ text: '待っています', color: TN.comment }]])
     cards.push(...card([{ text: `${ICON.now} Now`, color: TN.yellow, bold: true }], nowRows, inner))
 
+    const counted = await read($, stats)
+    const start = await read($, sessionStart)
+    if (start !== null) {
+      const ms = now - start
+      const spent = info?.usd == null ? null : info.usd - (counted.usdAtStart ?? 0)
+      const rate = spent === null || ms < RATE_MINUTES * 60_000 ? '—' : `$${(spent / (ms / 3_600_000)).toFixed(2)}/h`
+      cards.push(
+        ...card(
+          [{ text: `${ICON.session} Session`, color: TN.teal, bold: true }],
+          [
+            [[{ text: 'time', color: TN.comment }], [{ text: elapsedOf(ms), color: TN.fg }, { text: ` · ${counted.turns} turns`, color: TN.fgDark }]],
+            [[{ text: 'calls', color: TN.comment }], [{ text: String(counted.calls), color: TN.fg }, { text: ` · ${rate}`, color: TN.orange }]],
+          ],
+          inner,
+        ),
+      )
+    }
+
+    const list = (await read($, tasks)).items.filter(item => item.subject !== '')
+    if (list.length > 0) {
+      const finished = list.filter(item => item.status === 'completed').length
+      const shown = shownTasks(list)
+      cards.push(
+        ...card(
+          [{ text: `${ICON.tasks} Tasks ${finished}/${list.length}`, color: TN.green, bold: true }],
+          shown.map((item): [Seg[], Seg[]] => [[TASK_MARKS[item.status]], [{ text: item.subject, color: TASK_COLORS[item.status] }]]),
+          inner,
+          shown.length < list.length ? [{ text: `+${list.length - shown.length}`, color: TN.comment }] : undefined,
+        ),
+      )
+    }
+
+    const touched = (await read($, files)).slice(0, FILES_SHOWN)
+    if (touched.length > 0)
+      cards.push(
+        ...card(
+          [{ text: `${ICON.files} Files`, color: TN.orange, bold: true }],
+          touched.map((item): [Seg[], Seg[]] => {
+            const parts = item.path.split('/')
+            const folder = parts.at(-2)
+            return [
+              [{ text: `×${item.count}`, color: TN.comment }],
+              [{ text: parts.at(-1) ?? item.path, color: TN.fg }, ...(folder === undefined || folder === '' ? [] : [{ text: ` ${folder}`, color: TN.comment }])],
+            ]
+          }),
+          inner,
+        ),
+      )
+
     return (
       <Box flexDirection="column" paddingX={1}>
         {cards.map(line => draw(Text, line))}
@@ -772,6 +887,7 @@ export const register: Register = (on, options) => {
     if (e.agentId === undefined) {
       const now = await $.clock.now()
       await update($, lastTurnEnd, () => now)
+      await update($, stats, now => ({ ...now, turns: now.turns + 1 }))
       running.clear()
       tickWhileRunning($, false)
       await act($, { isWorking: false, tool: null, phase: null, startedAt: null })
