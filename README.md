@@ -54,7 +54,7 @@ brew install terminal-browser
 
 1. `plugins/<名前>/` にプラグインを置く。
 2. `.claude-plugin/marketplace.json` の `plugins` に足す。
-3. `claude plugin validate .` で検査する。
+3. `make verify` と `make test` で確かめる。
 
 ## 📏 版の上げ方
 
