@@ -1,6 +1,6 @@
 {
   "name": "snapshot-gallery",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "make snapshot で描いた PNG を、直す前と後で左右に並べて pane に出す",
   "types": "./types/index.d.ts",
   "userConfig": {
