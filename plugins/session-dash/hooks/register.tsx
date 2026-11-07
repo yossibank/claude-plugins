@@ -381,7 +381,9 @@ const toolName = (tool: string, agentId: string | undefined) => {
   return agentId === undefined ? name : `↳ ${name}`
 }
 
-let running = 0
+// 動いているツールの呼び出し。重なった呼び出しを、始まった順に持つ
+const running = new Map<string, { tool: string; startedAt: number }>()
+let callCount = 0
 let ticker: Timer | undefined
 
 // ツールが動いている間だけ、経った秒数のために 1 秒ごとに描き直す
@@ -409,7 +411,7 @@ const phaseLine = (doing: Activity, now: number): { mark: string; text: string; 
 const forget = async ($: EngineInterface) => {
   tasks.clear()
   current = null
-  running = 0
+  running.clear()
   tickWhileRunning($, false)
   await update($, activity, () => IDLE)
 }
@@ -461,29 +463,34 @@ export const register: Register = (on, options) => {
     let text = ''
     let said: string | null = null
     let isThinking = false
-    let stepped: Awaited<typeof stream.result>
-    while (true) {
-      const piece = await stream.next()
-      if (piece.done === true) {
-        stepped = piece.value
-        break
-      }
-      const chunk = piece.value
-      // 届いた途中の chunk で、応答の終わりを待たずに今の作業を書き換える
-      if (chunk.kind === 'thinking' && isMain && !isThinking && running === 0) {
-        isThinking = true
-        await act($, { phase: 'thinking' })
-      } else if (chunk.kind === 'text' && isMain) {
-        text += chunk.text
-        const line = firstLine(text)
-        if (line !== null && line !== said) {
-          said = line
-          await act($, { said, ...(running === 0 && isThinking ? { phase: 'done' as Phase } : {}) })
+    let stepped: Awaited<typeof stream.result> | undefined
+    try {
+      while (true) {
+        const piece = await stream.next()
+        if (piece.done === true) {
+          stepped = piece.value
+          break
         }
-      } else if (chunk.kind === 'tool' && !QUIET_TOOLS.has(chunk.name)) {
-        await act($, { tool: toolName(chunk.name, e.agentId), phase: 'preparing', startedAt: null })
+        const chunk = piece.value
+        // 届いた途中の chunk で、応答の終わりを待たずに今の作業を書き換える
+        if (chunk.kind === 'thinking' && isMain && !isThinking && running.size === 0) {
+          isThinking = true
+          await act($, { phase: 'thinking' })
+        } else if (chunk.kind === 'text' && isMain) {
+          text += chunk.text
+          const line = firstLine(text)
+          if (line !== null && line !== said) {
+            said = line
+            await act($, { said, ...(running.size === 0 && isThinking ? { phase: 'done' as Phase } : {}) })
+          }
+        } else if (chunk.kind === 'tool' && !QUIET_TOOLS.has(chunk.name) && running.size === 0) {
+          await act($, { tool: toolName(chunk.name, e.agentId), phase: 'preparing', startedAt: null })
+        }
+        yield chunk
       }
-      yield chunk
+    } finally {
+      // 途中でやめた時も、内側の stream を閉じる
+      if (stepped === undefined) await stream.return(undefined as never)
     }
     if (isMain) {
       const said = firstLine(stepped.answer)
@@ -497,17 +504,22 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     const args = e as unknown as Args
     const isShown = !QUIET_TOOLS.has(e.tool)
+    callCount += 1
+    const id = e.tool_use_id ?? `call-${callCount}`
+    const tool = describe(args)
     if (isShown) {
-      running += 1
+      running.set(id, { tool, startedAt: await $.clock.now() })
       tickWhileRunning($, true)
-      await act($, { tool: describe(args), phase: 'running', startedAt: await $.clock.now() })
+      await act($, { tool, phase: 'running', startedAt: running.get(id)!.startedAt })
     }
     const done = await next(e).finally(async () => {
-      if (!isShown) return
-      running = Math.max(0, running - 1)
-      if (running === 0) {
+      if (!isShown || !running.delete(id)) return
+      // まだ動いている呼び出しがあれば、最後に始まったものを出す
+      const last = [...running.values()].pop()
+      if (last !== undefined) await act($, { tool: last.tool, phase: 'running', startedAt: last.startedAt })
+      else {
         tickWhileRunning($, false)
-        await act($, { phase: 'done' })
+        await act($, { tool, phase: 'done' })
       }
     })
     if ('result' in done) {
@@ -678,7 +690,7 @@ export const register: Register = (on, options) => {
     if (e.agentId === undefined) {
       const now = await $.clock.now()
       await update($, lastTurnEnd, () => now)
-      running = 0
+      running.clear()
       tickWhileRunning($, false)
       await act($, { isWorking: false, tool: null, phase: null, startedAt: null })
       await readRepo($, true)

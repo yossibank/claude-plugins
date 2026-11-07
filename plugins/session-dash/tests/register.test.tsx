@@ -542,3 +542,21 @@ test('今の作業: ツールが動いている間は ● と経った秒数を�
   expect(await after.find({ type: 'Text', text: /^ {7}✓ Bash: テストする$/ })).toBeDefined()
   await after.unmount()
 })
+
+test('今の作業: 重なった呼び出しの片方が終わったら、残っている方を出す', async ($, on) => {
+  let release = () => {}
+  const hold = new Promise<never>(resolve => {
+    release = () => resolve({ result: { stdout: 'ok', stderr: '' }, text: 'ok' } as never)
+  })
+  engine(on, 41, 200000, false, {}, { isUsageBroken: false, hold })
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  const call = $.tool.call({ tool: 'Bash', command: 'make test', description: 'テストする', tool_use_id: 'b1' } as never)
+  await $.tool.call({ tool: 'Grep', pattern: 'foo', agentId: 'a1', tool_use_id: 'g1' } as never)
+
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: /^ {7}● Bash: テストする {2}0s$/ })).toBeDefined()
+  await ui.unmount()
+  release()
+  await call
+})
