@@ -1,5 +1,7 @@
 import { expect, mock, test, type TestBody } from 'claude-code/testing'
 
+import { cellWidth } from '../hooks/cell'
+
 type On = Parameters<TestBody>[1]
 type File = { text: string; mtimeMs: number }
 
@@ -14,24 +16,42 @@ const GIT: Record<string, string> = {
   'status --porcelain': ' M a.ts\n?? new.ts\n',
 }
 
-const engine = (on: On, percent: number, window = 200000, isShown = false, files: Record<string, File> = {}, state: { isUsageBroken: boolean; free?: number; hold?: Promise<never> } = { isUsageBroken: false }) => {
+type State = {
+  isUsageBroken: boolean
+  free?: number
+  hold?: Promise<never>
+  isRepoMissing?: boolean
+  isVersionBroken?: boolean
+  isPanesBroken?: boolean
+  chunks?: readonly Record<string, unknown>[]
+  agents?: { id: string; status: string; type?: string; description?: string }[]
+  answer?: string
+}
+
+const engine = (on: On, percent: number, window = 200000, isShown = false, files: Record<string, File> = {}, state: State = { isUsageBroken: false }) => {
   const clock = mock.clock(on, { now: T0 })
   const counts = { panes: 0 }
+  const toasts: string[] = []
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: '/repo/sub' }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('session.measure', (_, e) => ({ changed: e.changed }))
   on('classic.SessionStart', () => ({}))
-  on('command.register', () => ({ value: { command: 'session-dash' } }))
+  on('command.register', () => ({ value: { command: 'session-dashboard' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', (_, e) => {
+    toasts.push((e as { text: string }).text)
+    return { value: undefined } as never
+  })
   on('ui.panes', () => {
     counts.panes += 1
-    return { value: [{ id: 'session-dash', title: '📊 Session', isShown, isFocused: false, isPlaced: true }] }
+    if (state.isPanesBroken === true) return { deny: 'panes failed' }
+    return { value: [{ id: 'session-dashboard', title: '📊 Session', isShown, isFocused: false, isPlaced: true }] }
   })
-  on('session.repo', () => ({ value: { root: '/repo', remote: 'git@github.com:owner/app.git', internal: false, name: null } }))
+  on('session.repo', () => ({ value: state.isRepoMissing === true ? null : { root: '/repo', remote: 'git@github.com:owner/app.git', internal: false, name: null } }) as never)
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
-  on('session.version', () => ({ value: { version: '2.1.319', base: '2.1.319' } }))
+  on('session.version', () => (state.isVersionBroken === true ? { deny: 'version failed' } : { value: { version: '2.1.319', base: '2.1.319' } }))
   on('process.run', (_, e) => {
     const stdout = GIT[e.argv.slice(1, 3).join(' ')] ?? '/repo\n'
     return { value: { exitCode: 0, stdout, stderr: '' } as never }
@@ -81,13 +101,23 @@ const engine = (on: On, percent: number, window = 200000, isShown = false, files
     const { Text } = $.ui.resolve(e)
     return <Text>engine</Text>
   })
-  return { clock, counts }
+  let spawned = 0
+  on('agent.spawn', () => {
+    spawned += 1
+    return { model: 'haiku', agentId: `a${spawned}` } as never
+  })
+  on('agent.list', () => ({ value: (state.agents ?? []) as never }))
+  on('turn.step', async function* (_, e) {
+    for (const chunk of state.chunks ?? []) yield chunk as never
+    return { turnId: e.turnId, index: e.index, answer: state.answer ?? '', toolUses: [], stopReason: 'end_turn', usage: null } as never
+  })
+  return { clock, counts, toasts }
 }
 
 const start = ($: Parameters<TestBody>[0]) => $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
 
 const BAND = {
-  plugin: 'session-dash',
+  plugin: 'session-dashboard',
   surface: 'terminal',
   component: 'AbovePrompt',
   props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
@@ -95,14 +125,14 @@ const BAND = {
 } as const
 
 const PANE = {
-  plugin: 'session-dash',
+  plugin: 'session-dashboard',
   surface: 'terminal',
   component: 'Pane',
-  requestId: 'session-dash',
+  requestId: 'session-dashboard',
   props: { title: '📊 Session', isFocused: false, bodyColumns: 40, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
 } as const
 
-const cells = (line: string) => [...line].reduce((sum, char) => sum + (/[ᄀ-ᅟ⺀-꓏가-힣＀-｠]|\p{Extended_Pictographic}/u.test(char) ? 2 : 1), 0)
+const cells = cellWidth
 
 type Engine = Parameters<TestBody>[0]
 
@@ -366,15 +396,6 @@ test('今の作業: 重なった呼び出しの片方が終わったら、残っ
   await call
 })
 
-test('今の作業: サブエージェントの呼び出しには ↳ を付ける', async ($, on) => {
-  engine(on, 41)
-  await start($)
-  await $.turn.start({ turnId: 't1', text: 'go' })
-  await $.tool.call({ tool: 'Grep', pattern: 'foo', agentId: 'a1' } as never)
-
-  expect((await lines($)).some(line => /^│ 実行 │ ✓ ↳ Grep: foo +│$/u.test(line))).toBe(true)
-})
-
 test('今の作業: 長い行は … で幅に収める', async ($, on) => {
   engine(on, 41)
   await start($)
@@ -489,7 +510,7 @@ test('session.start を繰り返しても見張りのタイマーは重ならな
 test('右の pane が見えている間は、入力欄の上に帯を出さない', async ($, on) => {
   engine(on, 41, 200000, true)
   await start($)
-  await $.command.run({ command: 'session-dash', args: '' } as never)
+  await $.command.run({ command: 'session-dashboard', args: '' } as never)
 
   const ui = await $.ui.mount(BAND)
   expect(await ui.find({ type: 'Text', text: /ctx/ })).toBeUndefined()
@@ -570,4 +591,193 @@ test('Session: /clear の後は、それまでの費用を 1 時間あたりの�
   await clock.advance(30 * MINUTE)
 
   expect((await lines($)).some(line => /│ calls +│ 0 · \$0\.00\/h +│$/u.test(line))).toBe(true)
+})
+
+test('turn.step: 考え中・応答の最初の行・準備中のツールを今の作業に出し、モデルを書き換える', async ($, on) => {
+  const state: State = {
+    isUsageBroken: false,
+    chunks: [
+      { kind: 'thinking', index: 0, text: '考える' },
+      { kind: 'text', index: 1, text: '## 結論です\n詳細' },
+      { kind: 'tool', index: 2, id: 'u1', name: 'mcp__github__get_issue' },
+    ],
+    answer: '## 結論です\n詳細',
+  }
+  engine(on, 41, 200000, false, {}, state)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'claude-sonnet-5-5', messageCount: 1 })) void _
+
+  const found = await lines($)
+  expect(found.some(line => /^│ 作業 │ 結論です +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /^│ 実行 │ mcp__github__get_issue を準備しています…|^│ 実行 │ get_issue を準備しています… +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /^│ model │ Sonnet 5\.5 +│$/u.test(line))).toBe(true)
+})
+
+test('今の作業: mcp__ のツールは最後の名前だけを出す', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await $.tool.call({ tool: 'mcp__github__get_issue' } as never)
+
+  expect((await lines($)).some(line => /^│ 実行 │ ✓ get_issue +│$/u.test(line))).toBe(true)
+})
+
+test('リポジトリが無ければ、リポジトリの表もブランチも出さない', async ($, on) => {
+  engine(on, 41, 200000, false, {}, { isUsageBroken: false, isRepoMissing: true })
+  await start($)
+
+  expect((await lines($)).some(line => /owner\/app|branch/.test(line))).toBe(false)
+  expect((await bandLines($))[0]).not.toMatch(/feat\/dash/)
+})
+
+test('版を取れなかったら、覚えずに次の読み直しでもう一度取る', async ($, on) => {
+  const state: State = { isUsageBroken: false, isVersionBroken: true }
+  engine(on, 41, 200000, false, {}, state)
+  await start($)
+  expect((await lines($)).some(line => /v2\.1\.319/.test(line))).toBe(false)
+
+  state.isVersionBroken = false
+  await $.classic.SessionStart({ source: 'clear' })
+  expect((await lines($)).some(line => /v2\.1\.319/.test(line))).toBe(true)
+})
+
+test('pane の見張りに失敗したら、同じ失敗は 1 度だけトーストで知らせる', async ($, on) => {
+  const { clock, toasts } = engine(on, 41, 200000, false, {}, { isUsageBroken: false, isPanesBroken: true })
+  await start($)
+  await clock.advance(6000)
+
+  expect(toasts.filter(text => /pane の見張り.*panes failed/.test(text))).toHaveLength(1)
+})
+
+const spawn = ($: Engine, description: string, subagentType = 'explorer') => $.agent.spawn({ prompt: 'p', description, subagentType } as never)
+
+test('Now: サブエージェントを起こしてから終わるまで、種類・題・経過・ツールの回数を木で出す', async ($, on) => {
+  const { clock } = engine(on, 41)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await spawn($, '処理のコードの観点で調べる')
+  await $.tool.call({ tool: 'Read', file_path: '/repo/hook_io.py', agentId: 'a1' } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/repo/b.py', agentId: 'a1' } as never)
+  await clock.advance(100_000)
+
+  const found = await lines($, 60)
+  expect(found.some(line => /│ └ explorer {2}処理のコードの観点で調べる +1m40s │$/u.test(line))).toBe(true)
+  expect(found.some(line => /│ {5}✓ Read: b\.py +ツール 2 │$/u.test(line))).toBe(true)
+
+  await $.turn.complete(done('t2', 'a1'))
+  await clock.advance(5000)
+  const ended = await lines($, 60)
+  expect(ended.some(line => /└ explorer {2}処理のコードの観点で調べる +✓ 1m40s │$/u.test(line))).toBe(true)
+  expect(ended.some(line => /ツール/.test(line))).toBe(false)
+})
+
+test('Now: 3 本を並べ、最後の 1 本は └ で閉じる。終わったものは次の turn.start で消える', async ($, on) => {
+  engine(on, 41, 200000, false, {}, { isUsageBroken: false, agents: [{ id: 'a1', status: 'running' }, { id: 'a2', status: 'running' }] })
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  for (const title of ['一つ目', '二つ目', '三つ目']) await spawn($, title)
+  await $.tool.call({ tool: 'Grep', pattern: 'x', agentId: 'a2' } as never)
+  await $.turn.complete(done('t2', 'a3'))
+
+  const found = await lines($, 60)
+  expect(found.some(line => /├ explorer {2}一つ目 +0s │$/u.test(line))).toBe(true)
+  expect(found.some(line => /├ explorer {2}二つ目 +0s │$/u.test(line))).toBe(true)
+  expect(found.some(line => /│ │ {3}✓ Grep: x +ツール 1 │$/u.test(line))).toBe(true)
+  expect(found.some(line => /└ explorer {2}三つ目 +✓ 0s │$/u.test(line))).toBe(true)
+
+  await $.turn.complete(done())
+  await $.turn.start({ turnId: 't3', text: 'next' })
+  const next = await lines($, 60)
+  expect(next.some(line => /三つ目/.test(line))).toBe(false)
+  expect(next.some(line => /一つ目/.test(line))).toBe(true)
+})
+
+test('Now: 失敗・停止したサブエージェントは ✗ で出す', async ($, on) => {
+  const state: State = { isUsageBroken: false, agents: [{ id: 'a1', status: 'failed' }] }
+  engine(on, 41, 200000, false, {}, state)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await spawn($, '落ちる')
+  await $.turn.complete(done('t2', 'a1'))
+
+  expect((await lines($, 60)).some(line => /└ explorer {2}落ちる +✗ 0s │$/u.test(line))).toBe(true)
+})
+
+test('Now: 5 本を超えたら、動いているものを残して「ほか N 本」にまとめる', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  for (let index = 1; index <= 7; index += 1) await spawn($, `題${index}`)
+  await $.turn.complete(done('t2', 'a1'))
+  await $.turn.complete(done('t2', 'a2'))
+  await $.turn.complete(done('t2', 'a3'))
+
+  const found = await lines($, 60)
+  expect(found.filter(line => /explorer/.test(line))).toHaveLength(5)
+  expect(found.some(line => /└ ほか 2 本 +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /題4|題7/.test(line))).toBe(true)
+})
+
+test('Now: 幅が狭ければ、右の列（経過・回数）から落とす', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await spawn($, '処理のコードの観点で調べる')
+  await $.tool.call({ tool: 'Read', file_path: '/repo/a.py', agentId: 'a1' } as never)
+
+  const found = await lines($, 24)
+  const row = found.find(line => /explorer/.test(line)) ?? ''
+  expect(row).not.toMatch(/0s/)
+  expect(row).toMatch(/… *│$/)
+  expect(found.every(line => cells(line) === 22)).toBe(true)
+})
+
+test('Now: メインで重なって動いているツールも、まとめた 1 行と木で出す', async ($, on) => {
+  const { hold, release } = holding()
+  const { clock } = engine(on, 41, 200000, false, {}, { isUsageBroken: false, hold })
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  const first = $.tool.call({ tool: 'Bash', command: 'a', description: '一つ目', tool_use_id: 'b1' } as never)
+  const second = $.tool.call({ tool: 'Bash', command: 'b', description: '二つ目', tool_use_id: 'b2' } as never)
+  await clock.advance(1000)
+  const found = await lines($, 60)
+
+  expect(found.some(line => /^│ 実行 │ ● Bash ×2 · 1s +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /├ ● Bash: 一つ目 +1s │$/u.test(line))).toBe(true)
+  expect(found.some(line => /└ ● Bash: 二つ目 +1s │$/u.test(line))).toBe(true)
+  release()
+  await Promise.all([first, second])
+})
+
+test('Now: 済みのサブエージェントが同じ agentId で動き直したら、動いている状態に戻る', async ($, on) => {
+  const { clock } = engine(on, 41, 200000, false, {}, { isUsageBroken: false, agents: [{ id: 'a1', status: 'idle', type: 'explorer', description: '続きを頼む' }] })
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await spawn($, '続きを頼む')
+  await $.turn.complete(done('t2', 'a1'))
+  await $.turn.start({ turnId: 't3', text: 'again', agentId: 'a1' } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/repo/a.py', agentId: 'a1' } as never)
+  await clock.advance(3000)
+
+  const found = await lines($, 60)
+  expect(found.some(line => /└ explorer {2}続きを頼む +3s │$/u.test(line))).toBe(true)
+  expect(found.some(line => /✓ 0s/.test(line))).toBe(false)
+
+  await $.turn.complete(done('t4', 'a1'))
+  await $.turn.complete(done())
+  await $.turn.start({ turnId: 't5', text: 'next' })
+  await $.turn.start({ turnId: 't6', text: 'again', agentId: 'a1' } as never)
+  expect((await lines($, 60)).some(line => /└ explorer {2}続きを頼む/.test(line))).toBe(true)
+})
+
+test('Now: メインのターンが終わった時、一覧に無いサブエージェントは終わったとみなす', async ($, on) => {
+  const { clock } = engine(on, 41)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await spawn($, '止められた')
+  await $.turn.complete(done())
+  await clock.advance(10_000)
+
+  expect((await lines($, 60)).some(line => /└ explorer {2}止められた +✓ 0s │$/u.test(line))).toBe(true)
 })

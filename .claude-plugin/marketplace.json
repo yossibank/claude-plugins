@@ -16,9 +16,9 @@
       "description": "make snapshot で描いた PNG を、直す前と後で左右に並べて pane に出す"
     },
     {
-      "name": "session-dash",
-      "source": "./plugins/session-dash",
-      "description": "モデル・版・費用・リポジトリ・利用の上限・今の作業・文脈の埋まり具合・セッションの時間と回数・作業の一覧・書き換えたファイルを右の pane に出し、閉じている間は入力欄の上に出す"
+      "name": "session-dashboard",
+      "source": "./plugins/session-dashboard",
+      "description": "モデル・版・費用・リポジトリ・利用の上限・今の作業（動いているサブエージェントも）・文脈の埋まり具合を右の pane に出し、閉じている間は入力欄の上に出す。キャッシュが切れるまでの時間も出す"
     },
     {
       "name": "test-progress",
