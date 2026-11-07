@@ -1,7 +1,7 @@
 {
-  "name": "context-gauge",
-  "version": "0.2.0",
-  "description": "文脈の埋まり具合を種類ごとに色分けした棒で右の pane に出し、閉じている間は入力欄の上に 1 行で出す。キャッシュが切れるまでの時間も出す",
+  "name": "session-dash",
+  "version": "0.3.0",
+  "description": "モデル・版・費用・リポジトリ・利用の上限・今の作業・文脈の埋まり具合を右の pane に出し、閉じている間は入力欄の上に出す。キャッシュが切れるまでの時間も出す",
   "types": "./types/index.d.ts",
   "userConfig": {
     "cacheMinutes": {

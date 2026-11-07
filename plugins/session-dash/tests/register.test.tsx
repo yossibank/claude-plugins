@@ -8,6 +8,11 @@ const row = (name: string, tokens: number, kind: 'used' | 'free' | 'buffer') => 
 const T0 = 1_000_000_000
 const MINUTE = 60_000
 const HANDOFF = '/repo/.claude/handoff.md'
+const GIT: Record<string, string> = {
+  'branch --show-current': 'feat/dash\n',
+  'diff HEAD': '10\t2\ta.ts\n2\t1\tb.ts\n-\t-\timg.png\n',
+  'status --porcelain': ' M a.ts\n?? new.ts\n',
+}
 
 const engine = (on: On, percent: number, window = 200000, isShown = false, files: Record<string, File> = {}, state: { isUsageBroken: boolean; free?: number } = { isUsageBroken: false }) => {
   const clock = mock.clock(on, { now: T0 })
@@ -15,14 +20,22 @@ const engine = (on: On, percent: number, window = 200000, isShown = false, files
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: '/repo/sub' }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('session.measure', (_, e) => ({ changed: e.changed }))
   on('classic.SessionStart', () => ({}))
-  on('command.register', () => ({ value: { command: 'context-gauge' } }))
+  on('command.register', () => ({ value: { command: 'session-dash' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.panes', () => {
     counts.panes += 1
-    return { value: [{ id: 'context-gauge', title: '📊 Context', isShown, isFocused: false, isPlaced: true }] }
+    return { value: [{ id: 'session-dash', title: '📊 Session', isShown, isFocused: false, isPlaced: true }] }
   })
-  on('process.run', () => ({ value: { exitCode: 0, stdout: '/repo\n', stderr: '' } as never }))
+  on('session.repo', () => ({ value: { root: '/repo', remote: 'git@github.com:owner/app.git', internal: false, name: null } }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.version', () => ({ value: { version: '2.1.319', base: '2.1.319' } }))
+  on('process.run', (_, e) => {
+    const stdout = GIT[e.argv.slice(1, 3).join(' ')] ?? '/repo\n'
+    return { value: { exitCode: 0, stdout, stderr: '' } as never }
+  })
   on('fs.stat', (_, e) => {
     const file = files[e.path]
     if (file === undefined) return { deny: 'ENOENT' }
@@ -38,8 +51,11 @@ const engine = (on: On, percent: number, window = 200000, isShown = false, files
     return {
     value: {
       startedAt: 0,
-      rateLimits: [],
-      cost: { usd: 0 },
+      rateLimits: [
+        { kind: 'five_hour', percentUsed: 62, resetsAt: new Date(T0 + 130 * MINUTE).toISOString() },
+        { kind: 'seven_day', percentUsed: 43, resetsAt: new Date(T0 + (3 * 24 + 5) * 60 * MINUTE).toISOString() },
+      ],
+      cost: { usd: 1.236 },
       context: {
         tokens: (percent * window) / 100,
         window,
@@ -57,7 +73,7 @@ const engine = (on: On, percent: number, window = 200000, isShown = false, files
     } as never,
     }
   })
-  on('tool.call', () => ({ result: { stdout: 'ok', stderr: '' }, text: 'ok' }))
+  on('tool.call', (_, e) => (e.tool === 'TaskCreate' ? { result: { task: { id: '1', subject: 'x' } }, text: 'ok' } : { result: { stdout: 'ok', stderr: '' }, text: 'ok' }) as never)
   on('ui.render', ($, e) => {
     const { Text } = $.ui.resolve(e)
     return <Text>engine</Text>
@@ -68,7 +84,7 @@ const engine = (on: On, percent: number, window = 200000, isShown = false, files
 const start = ($: Parameters<TestBody>[0]) => $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
 
 const BAND = {
-  plugin: 'context-gauge',
+  plugin: 'session-dash',
   surface: 'terminal',
   component: 'AbovePrompt',
   props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
@@ -76,11 +92,11 @@ const BAND = {
 } as const
 
 const PANE = {
-  plugin: 'context-gauge',
+  plugin: 'session-dash',
   surface: 'terminal',
   component: 'Pane',
-  requestId: 'context-gauge',
-  props: { title: '📊 Context', isFocused: false, bodyColumns: 40, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
+  requestId: 'session-dash',
+  props: { title: '📊 Session', isFocused: false, bodyColumns: 40, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
 } as const
 
 const cells = (line: string) => [...line].reduce((sum, char) => sum + (/[ᄀ-ᅟ⺀-꓏가-힣＀-｠]|\p{Extended_Pictographic}/u.test(char) ? 2 : 1), 0)
@@ -211,6 +227,11 @@ test('pane: 棒は幅いっぱいで、狭くても収まる', async ($, on) => 
   const used = (await narrow.find({ type: 'Text', text: /^41% / }))?.text ?? ''
   expect(cells(head)).toBe(22)
   expect(cells(used)).toBe(22)
+  for (const pattern of [/^LIMIT /, /^ {7}7d /, /^REPO /, /^CLAUDE /]) {
+    const line = (await narrow.find({ type: 'Text', text: pattern }))?.text ?? ''
+    expect(line.length).toBeGreaterThan(0)
+    expect(cells(line)).toBeLessThanOrEqual(22)
+  }
   await narrow.unmount()
 })
 
@@ -334,10 +355,165 @@ test('session.start を繰り返しても見張りのタイマーは重ならな
 test('右の pane が見えている間は、入力欄の上に帯を出さない', async ($, on) => {
   engine(on, 41, 200000, true)
   await start($)
-  await $.command.run({ command: 'context-gauge', args: '' } as never)
+  await $.command.run({ command: 'session-dash', args: '' } as never)
 
   const ui = await $.ui.mount(BAND)
   expect(await ui.find({ type: 'Text', text: /41%/ })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /engine/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('pane: モデル・版・費用、リポジトリ・ブランチ・差分を出す', async ($, on) => {
+  engine(on, 41)
+  await start($)
+
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 50 } })
+  expect(await ui.find({ type: 'Text', text: /^CLAUDE Opus 5\.5 · v2\.1\.319 · \$1\.24$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^REPO {3}owner\/app {2}⚡feat\/dash {2}\+12 -3 \?1$/ })).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /^\+12$/ }))?.props?.color).toBe('#7fe0a0')
+  await ui.unmount()
+})
+
+test('pane: 上限は窓ごとに 1 行で、割合・棒・戻るまでの時間を出し、幅に収める', async ($, on) => {
+  engine(on, 41)
+  await start($)
+
+  const ui = await $.ui.mount(PANE)
+  const five = (await ui.find({ type: 'Text', text: /^LIMIT {2}5h ▰+▱+ 62% 2h10m$/ }))?.text ?? ''
+  expect(cells(five)).toBe(38)
+  expect(await ui.find({ type: 'Text', text: /^ {7}7d ▰+▱+ 43% 3d5h$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('session.measure で上限と費用を書き換える', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.session.measure({ context: { window: 200000 }, rateLimits: [{ kind: 'five_hour', percentUsed: 91 }], cost: { usd: 3 }, changed: ['rateLimits', 'cost'] } as never)
+
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: /^CLAUDE .*\$3\.00$/ })).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /^▰+$/ }))?.props?.color).toBe('#f05a5a')
+  expect(await ui.find({ type: 'Text', text: /7d/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('今の作業: 作業中の Task とツールを 2 行で出し、ターンが終わったら待つ', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await $.tool.call({ tool: 'TaskCreate', subject: '画面を直す', description: 'd', activeForm: '画面を直しています' } as never)
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'in_progress' } as never)
+  await $.tool.call({ tool: 'Bash', command: 'make verify', description: '確かめる' } as never)
+
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: /^NOW {4}画面を直しています$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^ {7}Bash: 確かめる$/ })).toBeDefined()
+  await ui.unmount()
+
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'end_turn' } as never)
+  const idle = await $.ui.mount(PANE)
+  expect(await idle.find({ type: 'Text', text: /^ {7}待っています$/ })).toBeDefined()
+  expect(await idle.find({ type: 'Text', text: /Bash/ })).toBeUndefined()
+  await idle.unmount()
+})
+
+test('今の作業: サブエージェントの呼び出しには ↳ を付ける', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await $.tool.call({ tool: 'Grep', pattern: 'foo', agentId: 'a1' } as never)
+
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: /^ {7}↳ Grep: foo$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('今の作業: 長い行は … で幅に収める', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await $.tool.call({ tool: 'Bash', command: 'x', description: 'とても長い説明がずっと続いていて pane の幅には収まらない' } as never)
+
+  const ui = await $.ui.mount(PANE)
+  const line = (await ui.find({ type: 'Text', text: /Bash: / }))?.text ?? ''
+  expect(line.endsWith('…')).toBe(true)
+  expect(cells(line)).toBeLessThanOrEqual(38)
+  await ui.unmount()
+})
+
+test('入力欄の上: 作業中だけ、今の作業を 2 行足す', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await $.tool.call({ tool: 'TodoWrite', todos: [{ content: '直す', activeForm: '直しています', status: 'in_progress' }] } as never)
+  await $.tool.call({ tool: 'Edit', file_path: '/repo/a.ts' } as never)
+
+  const ui = await $.ui.mount(BAND)
+  expect(await ui.find({ type: 'Text', text: /^▸ 直しています$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^ {2}Edit: a\.ts$/ })).toBeDefined()
+  await ui.unmount()
+
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'end_turn' } as never)
+  const idle = await $.ui.mount(BAND)
+  expect(await idle.find({ type: 'Text', text: /直しています|Edit/ })).toBeUndefined()
+  await idle.unmount()
+})
+
+test('/clear の後は今の作業を忘れる', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await $.tool.call({ tool: 'TaskCreate', subject: '古い作業', description: 'd' } as never)
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'in_progress' } as never)
+  await $.classic.SessionStart({ source: 'clear' })
+
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: /古い作業/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^NOW {4}待っています$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('入力欄の上: モデル・ブランチ・差分・上限の 1 行を足す', async ($, on) => {
+  engine(on, 41)
+  await start($)
+
+  const ui = await $.ui.mount(BAND)
+  expect(await ui.find({ type: 'Text', text: /^Opus 5\.5 · ⚡feat\/dash \+12 -3 \?1 · 5h 62% · 7d 43%$/ })).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /^62%$/ }))?.props?.color).toBe('#7fe0a0')
+  await ui.unmount()
+})
+
+test('入力欄の上: 狭ければブランチを … で縮めて幅に収める', async ($, on) => {
+  engine(on, 41)
+  await start($)
+
+  const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 48 } })
+  const line = (await ui.find({ type: 'Text', text: /^Opus 5\.5 · ⚡/ }))?.text ?? ''
+  expect(line).toMatch(/⚡fe.*… \+12/)
+  expect(cells(line)).toBeLessThanOrEqual(46)
+  await ui.unmount()
+})
+
+test('今の作業: 名前の無い Task は出さず、直前の行を残す', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '9', status: 'in_progress' } as never)
+
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: /^NOW {4}待っています$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('session.start をやり直したら今の作業を忘れる', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await $.tool.call({ tool: 'TaskCreate', subject: '古い作業', description: 'd' } as never)
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'in_progress' } as never)
+  await start($)
+
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: /古い作業/ })).toBeUndefined()
   await ui.unmount()
 })

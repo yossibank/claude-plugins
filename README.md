@@ -10,7 +10,7 @@
 | --- | --- |
 | [pr-browser](plugins/pr-browser) | `gh pr create` で作った PR のページを、[terminal-browser](https://github.com/zenbu-labs/terminal-browser) で右に開く。会話が 128 列より狭い時は下に開く |
 | [snapshot-gallery](plugins/snapshot-gallery) | `make snapshot` で描いた PNG を、直す前と後で左右に並べて pane に出す。`/snapshots <セット>` で開き、`j` と `k` で前と次に移る |
-| [context-gauge](plugins/context-gauge) | 文脈の埋まり具合を、種類ごとに色分けした棒で右の pane に出し、空きの多さを S〜D の評価で出す。pane を閉じている間は入力欄の上に 1 行で出し、キャッシュが切れるまでの時間も出す |
+| [session-dash](plugins/session-dash) | モデル・版・費用、リポジトリ・ブランチ・差分、利用の上限、今の作業を 2 行、文脈の埋まり具合を右の pane に出す。文脈は種類ごとに色分けした棒と S〜D の評価で出す。pane を閉じている間は入力欄の上に、文脈の 1 行と、モデル・ブランチ・差分・上限の 1 行を出し、作業中は今の作業の 2 行も足す。キャッシュが切れるまでの時間も出す |
 | [test-progress](plugins/test-progress) | テストのコマンドの間、進みの棒と落ちたテストを入力欄の上に出し、終わったらトーストで知らせる。コマンドの出力を `.build/test.log` に残しておく |
 
 ## 🚀 入れ方
@@ -27,6 +27,8 @@
    /plugin install <プラグイン>@yossibank
    /reload-plugins
    ```
+
+   context-gauge を入れていた時は、`/plugin uninstall context-gauge@yossibank` で外してから session-dash を入れる。
 
 3. pr-browser を使う時は、terminal-browser を入れる。
 
@@ -48,7 +50,7 @@
 | `snapshotsDir` | `.build/snapshots` | 描いた画像のフォルダ |
 | `beforeDir` | `.build/snapshots-before` | 描く前の画像を取っておくフォルダ |
 
-| context-gauge | 既定 | 中身 |
+| session-dash | 既定 | 中身 |
 | --- | --- | --- |
 | `cacheMinutes` | `60` | プロンプトキャッシュの寿命の分数。`5` か `60` |
 | `handoffPath` | `.claude/handoff.md` | 引き継ぎメモの置き場 |
