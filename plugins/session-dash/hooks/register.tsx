@@ -344,7 +344,7 @@ let current: string | null = null
 
 const taskLine = () => {
   const task = current === null ? undefined : tasks.get(current)
-  return task === undefined ? null : (task.activeForm ?? task.subject)
+  return task === undefined ? null : task.activeForm || task.subject || null
 }
 
 const pick = (e: Args, key: 'subject' | 'activeForm') => {
@@ -386,6 +386,7 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     await restart($, config)
+    await forget($)
     await readClaude($)
     await readRepo($, true)
     await $.command.register({ name: 'session-dash', description: 'セッションの計器盤を右の pane に出す' })
@@ -486,8 +487,11 @@ export const register: Register = (on, options) => {
     const limitRows = (info?.limits ?? []).map((limit, index) => {
       const name = LIMIT_NAMES[limit.kind] ?? limit.kind
       const percent = `${Math.round(limit.percentUsed)}%`
-      const reset = untilReset(limit.resetsAt, now)
-      const bar = meter(limit.percentUsed / 100, Math.max(4, body - cellWidth(name) - 1 - 1 - cellWidth(percent) - (reset === '' ? 0 : cellWidth(reset) + 1)))
+      const fixed = cellWidth(name) + 1 + 1 + cellWidth(percent)
+      const until = untilReset(limit.resetsAt, now)
+      // 棒が 4 も取れなければ、戻るまでの時間を落とす
+      const reset = until !== '' && body - fixed - cellWidth(until) - 1 >= 4 ? until : ''
+      const bar = meter(limit.percentUsed / 100, Math.max(1, body - fixed - (reset === '' ? 0 : cellWidth(reset) + 1)))
       return (
         <Text>
           {label(index === 0 ? 'LIMIT' : '')}

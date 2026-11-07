@@ -28,6 +28,8 @@
    /reload-plugins
    ```
 
+   context-gauge を入れていた時は、`/plugin uninstall context-gauge@yossibank` で外してから session-dash を入れる。
+
 3. pr-browser を使う時は、terminal-browser を入れる。
 
    ```sh

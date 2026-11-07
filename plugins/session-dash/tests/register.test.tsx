@@ -227,6 +227,11 @@ test('pane: 棒は幅いっぱいで、狭くても収まる', async ($, on) => 
   const used = (await narrow.find({ type: 'Text', text: /^41% / }))?.text ?? ''
   expect(cells(head)).toBe(22)
   expect(cells(used)).toBe(22)
+  for (const pattern of [/^LIMIT /, /^ {7}7d /, /^REPO /, /^CLAUDE /]) {
+    const line = (await narrow.find({ type: 'Text', text: pattern }))?.text ?? ''
+    expect(line.length).toBeGreaterThan(0)
+    expect(cells(line)).toBeLessThanOrEqual(22)
+  }
   await narrow.unmount()
 })
 
@@ -486,5 +491,29 @@ test('入力欄の上: 狭ければブランチを … で縮めて幅に収め�
   const line = (await ui.find({ type: 'Text', text: /^Opus 5\.5 · ⚡/ }))?.text ?? ''
   expect(line).toMatch(/⚡fe.*… \+12/)
   expect(cells(line)).toBeLessThanOrEqual(46)
+  await ui.unmount()
+})
+
+test('今の作業: 名前の無い Task は出さず、直前の行を残す', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '9', status: 'in_progress' } as never)
+
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: /^NOW {4}待っています$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('session.start をやり直したら今の作業を忘れる', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await $.tool.call({ tool: 'TaskCreate', subject: '古い作業', description: 'd' } as never)
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'in_progress' } as never)
+  await start($)
+
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: /古い作業/ })).toBeUndefined()
   await ui.unmount()
 })
