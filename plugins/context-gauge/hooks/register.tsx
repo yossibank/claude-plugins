@@ -5,6 +5,50 @@ import type { Breakpoint, Fill, Upcoming } from '../types'
 
 const GH_MERGE = /\bgh\s+pr\s+merge\s+(?:-\S+\s+)*(?:https:\/\/\S+\/pull\/)?(\d+)/
 const PRUNE_MERGED = /prune-merged\.sh\s+\S+\s+\S+\s+(\d+)/
+const HEREDOC = /<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2(?=\n|$)/g
+const SHELLS = new Set(['bash', 'sh', 'zsh'])
+
+type Word = { text: string; isQuoted: boolean }
+
+// heredoc の本文を外し、コマンドごとに語へ分ける。区切りの記号は引用符の外だけで見る
+const commandsOf = (source: string): Word[][] => {
+  const commands: Word[][] = [[]]
+  let word: Word | null = null
+  let quote: string | null = null
+  const endWord = () => {
+    if (word !== null) commands[commands.length - 1].push(word)
+    word = null
+  }
+  for (const char of source.replace(HEREDOC, '')) {
+    if (quote !== null) {
+      if (char === quote) quote = null
+      else word!.text += char
+    } else if (char === "'" || char === '"') {
+      quote = char
+      word ??= { text: '', isQuoted: false }
+      word.isQuoted = true
+    } else if (/[;&|\n]/.test(char)) {
+      endWord()
+      if (commands[commands.length - 1].length > 0) commands.push([])
+    } else if (/\s/.test(char)) endWord()
+    else {
+      word ??= { text: '', isQuoted: false }
+      word.text += char
+    }
+  }
+  endWord()
+  return commands.filter(words => words.length > 0)
+}
+
+// 走らせる形だけを残す。頭の語は引用符でも残し、引数の引用符の中は外す。bash -c の中身は読み直す
+const runnable = (command: string): string =>
+  commandsOf(command)
+    .map(words => {
+      const inner = words.findIndex(one => one.text === '-c')
+      if (SHELLS.has(words[0].text.split('/').pop() ?? '') && inner > 0 && words[inner + 1] !== undefined) return runnable(words[inner + 1].text)
+      return words.filter((one, index) => index === 0 || !one.isQuoted).map(one => one.text).join(' ')
+    })
+    .join('\n')
 const NEXT_LINE = /^\s*[-*]\s*次[：:]\s*(.*)$/
 const NEXT_ITEM = /(?:^|\s)\d+[.．]\s+/
 const NEXT_HEAD = '📌 次  '
@@ -353,8 +397,10 @@ export const register: Register = (on, options) => {
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const ran = await next(e)
-    if (ran.deny !== undefined || ran.isError === true || !config.breakPattern.test(e.command)) return ran
-    const number = GH_MERGE.exec(e.command)?.[1] ?? PRUNE_MERGED.exec(e.command)?.[1]
+    if (ran.deny !== undefined || ran.isError === true) return ran
+    const command = runnable(e.command)
+    if (!config.breakPattern.test(command)) return ran
+    const number = GH_MERGE.exec(command)?.[1] ?? PRUNE_MERGED.exec(command)?.[1]
     const label = number === undefined ? '区切りのコマンドが走った' : `PR #${number} をマージした`
     const at = await $.clock.now()
     await update($, breakpoint, () => ({ label, at }))

@@ -104,6 +104,56 @@ test('区切り: prune-merged.sh は 3 つ目の引数から番号を取る', as
   await ui.unmount()
 })
 
+test('区切り: 引用符の中の語では区切らない', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.tool.call({ tool: 'Bash', command: 'grep -n "gh pr merge" README.md' })
+
+  const ui = await $.ui.mount(BAND)
+  expect(await ui.find({ type: 'Text', text: /頃合い/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('区切り: heredoc の本文の語では区切らない', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.tool.call({ tool: 'Bash', command: "python3 - <<'EOF'\nprint('prune-merged.sh')\nprune-merged.sh a b 9\nEOF" })
+
+  const ui = await $.ui.mount(BAND)
+  expect(await ui.find({ type: 'Text', text: /頃合い/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('区切り: 引用符で囲んだパスで呼んでも区切る', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.tool.call({ tool: 'Bash', command: 'cd /repo && "$DIR/scripts/prune-merged.sh" a b 12' })
+
+  const ui = await $.ui.mount(BAND)
+  expect(await ui.find({ type: 'Text', text: /PR #12 をマージした/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('区切り: bash -c の中のコマンドも区切る', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.tool.call({ tool: 'Bash', command: 'bash -c "gh pr merge 5 --squash"' })
+
+  const ui = await $.ui.mount(BAND)
+  expect(await ui.find({ type: 'Text', text: /PR #5 をマージした/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('区切り: 番号は走らせたコマンドから取り、引数の中の番号は使わない', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.tool.call({ tool: 'Bash', command: "echo 'gh pr merge 99' && gh pr merge 5" })
+
+  const ui = await $.ui.mount(BAND)
+  expect(await ui.find({ type: 'Text', text: /PR #5 をマージした/ })).toBeDefined()
+  await ui.unmount()
+})
+
 test('区切り: 番号が取れなければ汎用の文言にする', async ($, on) => {
   engine(on, 41)
   await start($)
