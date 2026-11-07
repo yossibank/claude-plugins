@@ -1,16 +1,16 @@
-import { expect, test, type TestBody } from 'claude-code/testing'
+import { expect, mock, test, type TestBody } from 'claude-code/testing'
 
 type On = Parameters<TestBody>[1]
 
 const PASSED_LOG = '\x1b[32m✔\x1b[0m a() (0.1 seconds)\n    \x1b[32m✔\x1b[0m b() (0.1 seconds)\n\x1b[32;1mTest Succeeded\x1b[0m\n'
 const FAILED_LOG = '    ✔ a() (0.1 seconds)\n    ✖ monthTotalsSkipFuture(), Expectation failed\nTest Failed\n'
 
-const engine = (on: On, log: string, seen: { toasts: string[]; reads: string[]; store: Map<string, unknown> }) => {
-  on('session.start', (_, e) => ({ cwd: e.cwd }))
+const engine = (on: On, log: string, seen: { toasts: string[]; reads: string[]; store: Map<string, unknown> }, cwd = '/repo', mtimeMs = 1_000_000, isClockOwn = false) => {
+  on('session.cwd', () => ({ value: cwd }))
   on('tool.call', () => ({ result: { stdout: '', stderr: '' }, text: '' }))
-  on('clock.now', () => ({ value: 1_000_000 }))
+  if (!isClockOwn) on('clock.now', () => ({ value: 1_000_000 }))
   on('fs.exists', () => ({ value: true }))
-  on('fs.stat', () => ({ value: { mtimeMs: 1_000_000 } as never }))
+  on('fs.stat', () => ({ value: { mtimeMs } as never }))
   on('fs.read', (_, e) => {
     seen.reads.push(e.path)
     return { value: log }
@@ -35,7 +35,6 @@ const fresh = () => ({ toasts: [] as string[], reads: [] as string[], store: new
 test('通ったら本数をトーストで知らせ、次の回のために数を覚える', async ($, on) => {
   const seen = fresh()
   engine(on, PASSED_LOG, seen)
-  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
 
   await $.tool.call({ tool: 'Bash', command: 'make test' })
 
@@ -47,7 +46,6 @@ test('通ったら本数をトーストで知らせ、次の回のために数�
 test('落ちたら落ちた本数を知らせる', async ($, on) => {
   const seen = fresh()
   engine(on, FAILED_LOG, seen)
-  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
 
   await $.tool.call({ tool: 'Bash', command: 'make -C /work test SIMULATOR=x' })
 
@@ -59,7 +57,6 @@ test('裏で走らせた間は、前の回の数で進みの帯を出す', async
   const seen = fresh()
   seen.store.set('total', 10)
   engine(on, '', seen)
-  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
 
   await $.tool.call({ tool: 'Bash', command: 'make test', run_in_background: true })
 
@@ -78,10 +75,96 @@ test('裏で走らせた間は、前の回の数で進みの帯を出す', async
 test('make test 以外では何もしない', async ($, on) => {
   const seen = fresh()
   engine(on, PASSED_LOG, seen)
-  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
 
   await $.tool.call({ tool: 'Bash', command: 'make android-test && make test-build' })
 
   expect(seen.reads).toEqual([])
   expect(seen.toasts).toEqual([])
+})
+
+const OTHER_LOG = 'ok: a\nok: b\nok: c\nbad: login\nDONE\nGOOD\n'
+const OTHER = {
+  target: 'check',
+  logPath: 'out/check.log',
+  passedLine: '^ok: ',
+  failedLine: '^bad: (.+)$',
+  finishedLine: '^DONE$',
+  succeededLine: '^GOOD$',
+}
+
+test('options でターゲット・ログの置き場・行の形を変えられる', { options: OTHER }, async ($, on) => {
+  const seen = fresh()
+  engine(on, OTHER_LOG.replace('bad: login\n', ''), seen)
+
+  await $.tool.call({ tool: 'Bash', command: 'make test' })
+  expect(seen.reads).toEqual([])
+
+  await $.tool.call({ tool: 'Bash', command: 'make check' })
+  expect(seen.reads).toContain('/repo/out/check.log')
+  expect(seen.toasts).toEqual(['✔ make check 3 本通った · 0:00'])
+  expect(seen.store.get('total')).toBe(3)
+})
+
+test('壊れた正規表現は初めの値に戻る', { options: { passedLine: '(' } }, async ($, on) => {
+  const seen = fresh()
+  engine(on, PASSED_LOG, seen)
+
+  await $.tool.call({ tool: 'Bash', command: 'make test' })
+
+  expect(seen.toasts).toEqual(['✔ make test 2 本通った · 0:00'])
+})
+
+test('cd のあとの make は、動かした先を基点にする', async ($, on) => {
+  const seen = fresh()
+  engine(on, PASSED_LOG, seen)
+
+  await $.tool.call({ tool: 'Bash', command: 'cd app && make test' })
+  await $.tool.call({ tool: 'Bash', command: 'cd /abs; cd sub && make -C x test' })
+
+  expect(seen.reads).toEqual(['/repo/app/.build/test.log', '/abs/sub/x/.build/test.log'])
+})
+
+test('落ちた回は総数を覚えない', { options: OTHER }, async ($, on) => {
+  const seen = fresh()
+  seen.store.set('total', 10)
+  engine(on, OTHER_LOG.replace('GOOD\n', ''), seen)
+
+  await $.tool.call({ tool: 'Bash', command: 'make check' })
+
+  expect(seen.toasts).toEqual(['✖ make check 1 本落ちた · 0:00'])
+  expect(seen.store.get('total')).toBe(10)
+  expect(seen.store.has('durationMs')).toBe(false)
+})
+
+test('0 本の回は総数を覚えない', async ($, on) => {
+  const seen = fresh()
+  seen.store.set('total', 10)
+  engine(on, 'Test Succeeded\n', seen)
+
+  await $.tool.call({ tool: 'Bash', command: 'make test' })
+
+  expect(seen.store.get('total')).toBe(10)
+})
+
+test('ログが 5 分変わらないと、帯を消して止める', async ($, on) => {
+  const seen = fresh()
+  seen.store.set('total', 10)
+  const clock = mock.clock(on, { now: 1_000_000 })
+  engine(on, '✔ a() (0.1 seconds)\n', seen, '/repo', 1_000_000, true)
+  const props = { hasSurvey: false, isWorking: true, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} }
+  const shown = async () => {
+    const ui = await $.ui.mount({ plugin: 'test-progress', surface: 'terminal', component: 'AbovePrompt', props, viewport: { columns: 80, rows: 40 } })
+    const found = (await ui.find({ type: 'Text', text: /🧪 make test/ })) !== undefined
+    await ui.unmount()
+    return found
+  }
+
+  await $.tool.call({ tool: 'Bash', command: 'make test', run_in_background: true })
+  await clock.advance(60_000)
+  expect(await shown()).toBe(true)
+
+  await clock.advance(5 * 60_000)
+  expect(await shown()).toBe(false)
+  expect(seen.toasts).toEqual([])
+  expect(seen.store.get('total')).toBe(10)
 })

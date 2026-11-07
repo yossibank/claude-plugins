@@ -1,11 +1,10 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, PluginOptions, Register } from 'claude-code'
 
 import type { Gallery, SnapshotCase } from '../types'
 
 const PANE = 'snapshot-gallery'
 const TITLE = '📸 Snapshots'
-const SNAPSHOT = /\bmake\b(?:\s+-C\s+(\S+))?[^;&|\n]*\bsnapshot\b[^;&|\n]*\bSNAPSHOT=([\w.-]+)/
 const MAX_IMAGE_ROWS = 255
 const MIN_IMAGE_ROWS = 6
 const CHROME_ROWS = 10
@@ -32,6 +31,51 @@ const gallery = atom({ plugin: 'snapshot-gallery', key: 'gallery' } as const, nu
 })
 
 const join = (...parts: string[]) => parts.join('/').replace(/\/+/g, '/')
+
+type Folders = { after: string; before: string }
+
+const unquote = (text: string) => text.replace(/^(['"])(.*)\1$/, '$2')
+
+const go = (base: string, dir: string) => {
+  const target = unquote(dir)
+  const parts: string[] = []
+  for (const part of (target.startsWith('/') ? target : join(base, target)).split('/')) {
+    if (part === '..') parts.pop()
+    else if (part !== '' && part !== '.') parts.push(part)
+  }
+  return `/${parts.join('/')}`
+}
+
+// コマンドの区切り（&& ; ||）ごとに、match の位置の区切りまで cd と make -C を順に当てて基点を動かす
+const moveBase = (start: string, command: string, at: number) => {
+  let base = start
+  let from = 0
+  for (const cut of [...command.matchAll(/&&|;|\|\||\n/g), { index: command.length, 0: '' }]) {
+    const end = cut.index ?? command.length
+    const part = command.slice(from, end)
+    const cd = part.match(/^\s*cd\s+(\S+)/)
+    if (cd?.[1] !== undefined) base = go(base, cd[1])
+    if (at >= from && at < end) {
+      const make = part.match(/\bmake\b[^|]*?\s-C\s*(\S+)/)
+      return make?.[1] === undefined ? base : go(base, make[1])
+    }
+    from = end + cut[0].length
+  }
+  return base
+}
+
+const folders = (options: PluginOptions): Folders => ({
+  after: String(options.snapshotsDir ?? '.build/snapshots'),
+  before: String(options.beforeDir ?? '.build/snapshots-before'),
+})
+
+const watcher = (options: PluginOptions) => {
+  try {
+    return new RegExp(String(options.commandPattern ?? 'make\\s+(?:-C\\s+\\S+\\s+)?snapshot\\s+SNAPSHOT=([\\w.-]+)'))
+  } catch {
+    return null
+  }
+}
 
 const pngs = async ($: EngineInterface, dir: string) => {
   if (!(await $.fs.exists(dir))) return []
@@ -68,9 +112,9 @@ const sizes = async ($: EngineInterface, files: string[]) => {
   return found
 }
 
-const collect = async ($: EngineInterface, root: string, set: string): Promise<Gallery> => {
-  const afterDir = join(root, '.build/snapshots', set)
-  const beforeDir = join(root, '.build/snapshots-before', set)
+const collect = async ($: EngineInterface, root: string, set: string, dirs: Folders): Promise<Gallery> => {
+  const afterDir = join(root, dirs.after, set)
+  const beforeDir = join(root, dirs.before, set)
   const after = await pngs($, afterDir)
   const before = new Map((await pngs($, beforeDir)).map(entry => [entry.name, entry]))
   const afterFiles = after.map(entry => join(afterDir, entry.name))
@@ -127,11 +171,11 @@ const label = (one: SnapshotCase, set: string) => (one.name.startsWith(`${set}-`
 
 const open = ($: EngineInterface) => $.ui.open({ id: PANE, title: TITLE })
 
-export const register: Register = on => {
-  let root = ''
+export const register: Register = (on, options) => {
+  const dirs = folders(options)
+  const pattern = watcher(options)
 
   on('session.start', async ($, e, next) => {
-    root = e.cwd
     await $.command.register({ name: 'snapshots', description: 'スナップショットの画廊を開く。引数にセットの名前を渡せる' })
     return next(e)
   })
@@ -139,7 +183,7 @@ export const register: Register = on => {
   on('command.run', { command: 'snapshots' }, async ($, e) => {
     const set = e.args.trim()
     if (set.length > 0) {
-      const found = await collect($, root, set)
+      const found = await collect($, await $.session.cwd(), set, dirs)
       await update($, gallery, () => found)
     }
     const state = await read($, gallery)
@@ -149,22 +193,39 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-    const found = e.command.match(SNAPSHOT)
+    const found = pattern === null ? null : e.command.match(pattern)
     if (found === null) return next(e)
 
-    const base = found[1] === undefined ? root : found[1].startsWith('/') ? found[1] : join(root, found[1])
-    const set = found[2] ?? ''
-    const afterDir = join(base, '.build/snapshots', set)
-    const beforeDir = join(base, '.build/snapshots-before', set)
-    if ((await pngs($, afterDir)).length > 0) {
-      await $.process.run(['mkdir', '-p', beforeDir])
-      await $.process.run(['rsync', '-a', '--delete', '--include', '*.png', '--exclude', '*', `${afterDir}/`, `${beforeDir}/`])
+    const base = moveBase(await $.session.cwd(), e.command, found.index ?? 0)
+    const set = found[1] ?? ''
+    if (!/^[\w-][\w.-]*$/.test(set) || set.includes('..')) return next(e)
+    const afterDir = join(base, dirs.after, set)
+    const beforeDir = join(base, dirs.before, set)
+    const pending = `${beforeDir}.pending`
+    const isCopied = (await pngs($, afterDir)).length > 0
+    if (isCopied) {
+      await $.process.run(['rm', '-rf', pending])
+      await $.process.run(['mkdir', '-p', pending])
+      await $.process.run(['rsync', '-a', '--delete', '--include', '*.png', '--exclude', '*', `${afterDir}/`, `${pending}/`])
     }
 
-    const ran = await next(e)
-    if (ran.deny !== undefined || ran.isError === true) return ran
+    let ran
+    try {
+      ran = await next(e)
+    } catch (error) {
+      if (isCopied) await $.process.run(['rm', '-rf', pending])
+      throw error
+    }
+    if (ran.deny !== undefined || ran.isError === true) {
+      if (isCopied) await $.process.run(['rm', '-rf', pending])
+      return ran
+    }
+    if (isCopied) {
+      await $.process.run(['rm', '-rf', beforeDir])
+      await $.process.run(['mv', pending, beforeDir])
+    }
 
-    const drawn = await collect($, base, set)
+    const drawn = await collect($, base, set, dirs)
     if (drawn.cases.length > 0) {
       await update($, gallery, () => drawn)
       void open($)

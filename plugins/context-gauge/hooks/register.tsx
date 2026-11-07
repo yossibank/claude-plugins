@@ -1,10 +1,13 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, PluginOptions, Register, Timer } from 'claude-code'
 
-import type { Fill } from '../types'
+import type { Breakpoint, Fill, Upcoming } from '../types'
 
-const CREATE = new RegExp(['\\bgh', 'pr', 'create\\b'].join('\\s+'))
-const PR_NUMBER = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/(\d+)/g
+const GH_MERGE = /\bgh\s+pr\s+merge\s+(?:-\S+\s+)*(?:https:\/\/\S+\/pull\/)?(\d+)/
+const PRUNE_MERGED = /prune-merged\.sh\s+\S+\s+\S+\s+(\d+)/
+const NEXT_LINE = /^\s*[-*]\s*次[：:]\s*(.*)$/
+const NEXT_ITEM = /(?:^|\s)\d+[.．]\s+/
+const NEXT_HEAD = '📌 次  '
 const STEPS = ['⣀', '⣄', '⣤', '⣦', '⣶', '⣷', '⣿']
 const FULL = '⣿'
 const DIGITS: Record<string, [string, string, string]> = {
@@ -34,15 +37,17 @@ const NAMES: Record<string, string> = {
   Skills: 'スキル',
   Messages: '会話',
 }
-const YELLOW_AT = 50
-const RED_AT = 80
 const SLACK_COLUMNS = 2
 const PANE = 'context-gauge'
 const TITLE = '📊 Context'
 const WATCH_MS = 2000
 
 const fill = atom({ plugin: 'context-gauge', key: 'fill' } as const, null, { shape: 'fill-1' })
-const pullRequest = atom({ plugin: 'context-gauge', key: 'pullRequest' } as const, null)
+const lastTurnEnd = atom({ plugin: 'context-gauge', key: 'lastTurnEnd' } as const, null)
+const breakpoint = atom({ plugin: 'context-gauge', key: 'breakpoint' } as const, null)
+const sessionStart = atom({ plugin: 'context-gauge', key: 'sessionStart' } as const, null)
+const upcoming = atom({ plugin: 'context-gauge', key: 'upcoming' } as const, null)
+const tick = atom({ plugin: 'context-gauge', key: 'tick' } as const, 0)
 const isPaneShown = atom({ plugin: 'context-gauge', key: 'isPaneShown' } as const, false)
 
 const thousands = (tokens: number) => {
@@ -114,28 +119,159 @@ const widths = (parts: number[], columns: number) => {
   return cells
 }
 
+const tone = (measured: Fill, config: Config): keyof typeof GRADIENTS =>
+  measured.percent >= config.redAt ? 'error' : measured.percent >= config.yellowAt ? 'warning' : 'success'
+
+type Config = {
+  cacheMs: number
+  yellowAt: number
+  redAt: number
+  breakPattern: RegExp
+  handoffPath: string
+}
+
+const configure = (options: PluginOptions): Config => {
+  const source = String(options.breakPattern ?? 'gh pr merge|prune-merged\\.sh')
+  const pattern = (() => {
+    try {
+      return new RegExp(source)
+    } catch {
+      return new RegExp('gh pr merge|prune-merged\\.sh')
+    }
+  })()
+  return {
+    cacheMs: Number(options.cacheMinutes ?? '60') * 60_000,
+    yellowAt: Number(options.yellowAt ?? 50),
+    redAt: Number(options.redAt ?? 80),
+    breakPattern: pattern,
+    handoffPath: String(options.handoffPath ?? '.claude/handoff.md'),
+  }
+}
+
+let watcher: Timer | undefined
+let handoffFile: string | undefined
+
+const resolveHandoff = async ($: EngineInterface, config: Config) => {
+  const cwd = await $.session.cwd()
+  const top = await $.process
+    .run(['git', 'rev-parse', '--show-toplevel'], { cwd })
+    .then(result => (result.exitCode === 0 ? result.stdout.trim() : ''))
+    .catch(() => '')
+  const base = top === '' ? cwd : top
+  return config.handoffPath.startsWith('/') ? config.handoffPath : `${base.replace(/\/$/, '')}/${config.handoffPath}`
+}
+
+const handoffOf = async ($: EngineInterface, config: Config) => {
+  handoffFile ??= await resolveHandoff($, config)
+  return handoffFile
+}
+
+const parseNext = (text: string): string[] => {
+  const lines = text.split('\n')
+  const at = lines.findIndex(line => NEXT_LINE.test(line))
+  if (at < 0) return []
+  const chunks = [NEXT_LINE.exec(lines[at] ?? '')?.[1] ?? '']
+  for (const line of lines.slice(at + 1)) {
+    if (!/^\s+\S/.test(line)) break
+    chunks.push(line.trim())
+  }
+  return chunks
+    .join(' ')
+    .split(NEXT_ITEM)
+    .map(item => item.trim())
+    .filter(item => item !== '')
+}
+
+const readUpcoming = async ($: EngineInterface, config: Config): Promise<Upcoming | null> => {
+  const path = await handoffOf($, config)
+  const stat = await $.fs.stat(path).catch(() => undefined)
+  if (stat === undefined) return null
+  const text = await $.fs.read(path).catch(() => '')
+  const items = parseNext(typeof text === 'string' ? text : '')
+  return items.length === 0 ? null : { items, mtimeMs: stat.mtimeMs }
+}
+
+const begin = async ($: EngineInterface, config: Config) => {
+  handoffFile = undefined
+  const now = await $.clock.now()
+  const found = await readUpcoming($, config)
+  await update($, sessionStart, () => now)
+  await update($, lastTurnEnd, () => null)
+  await update($, breakpoint, () => null)
+  await update($, upcoming, () => found)
+}
+
+const restart = async ($: EngineInterface, config: Config) => {
+  await begin($, config)
+  await measure($)
+}
+
 const watchPane = async ($: EngineInterface) => {
   const shown = (await $.ui.panes()).some(pane => pane.id === PANE && pane.isShown)
   if (shown !== (await read($, isPaneShown))) await update($, isPaneShown, () => shown)
+  const minute = Math.floor((await $.clock.now()) / 60_000)
+  if (minute !== (await read($, tick))) await update($, tick, () => minute)
 }
 
-const tone = (measured: Fill, pr: number | null) => {
-  const isLate = measured.percent >= RED_AT || pr !== null
-  const color: keyof typeof GRADIENTS = isLate ? 'error' : measured.percent >= YELLOW_AT ? 'warning' : 'success'
-  return { isLate, color }
+type Advice = {
+  isGood: boolean
+  lines: string[]
+  next: string[]
 }
 
-const note = (measured: Fill, pr: number | null, isLate: boolean) =>
-  pr !== null ? `🧹 PR #${pr} → /clear` : isLate ? '🧹 /clear' : `${thousands(measured.tokens)} / ${thousands(measured.window)}`
+const advise = async ($: EngineInterface, config: Config, measured: Fill): Promise<Advice> => {
+  const now = await $.clock.now()
+  const start = await read($, sessionStart)
+  const lastTurn = await read($, lastTurnEnd)
+  const stop = await read($, breakpoint)
+  const ahead = await read($, upcoming)
+  const percent = measured.percent
+  const since = now - (lastTurn ?? start ?? now)
+  const isExpired = since >= config.cacheMs
 
-export const register: Register = on => {
+  const reason =
+    stop !== null
+      ? stop.label
+      : isExpired && percent >= config.yellowAt
+        ? `キャッシュが切れた（${percent}%）`
+        : percent >= config.redAt
+          ? `文脈が ${percent}%`
+          : null
+
+  const stat = await $.fs.stat(await handoffOf($, config)).catch(() => undefined)
+  const next =
+    ahead !== null && stop === null && (stat === undefined || stat.mtimeMs <= ahead.mtimeMs)
+      ? ahead.items.map((item, index) => `${index + 1}. ${item}`)
+      : []
+
+  if (reason === null) return { isGood: false, lines: [], next }
+
+  const cache = isExpired ? '続けても安くならない' : `キャッシュ切れまで ${Math.max(1, Math.ceil((config.cacheMs - since) / 60_000))} 分`
+  const since0 = stop?.at ?? start ?? 0
+  const isOld = stat === undefined || stat.size === 0 || stat.mtimeMs < since0
+  const name = config.handoffPath.split('/').pop()
+  const handoff = isOld ? `${name} が古いので先に ctx-handoff` : `${name} は新しい`
+  return { isGood: true, lines: [`🧹 今が /clear の頃合い  ${reason}`, `   ${cache} · ${handoff}`], next }
+}
+
+const nextRows = (next: string[]) => next.map((item, index) => (index === 0 ? `${NEXT_HEAD}${item}` : `${' '.repeat(cellWidth(NEXT_HEAD))}${item}`))
+
+export const register: Register = (on, options) => {
+  const config = configure(options)
+
   on('session.start', async ($, e, next) => {
     const started = await next(e)
-    await update($, pullRequest, () => null)
-    await measure($)
+    await restart($, config)
     await $.command.register({ name: 'context-gauge', description: '文脈の量を右の pane に出す' })
     void $.ui.open({ id: PANE, title: TITLE })
-    $.clock.every(WATCH_MS, () => void watchPane($))
+    watcher?.cancel()
+    watcher = $.clock.every(WATCH_MS, () => void watchPane($))
+    return started
+  })
+
+  on('classic.SessionStart', async ($, e, next) => {
+    const started = await next(e)
+    if (e.source === 'clear') await restart($, config)
     return started
   })
 
@@ -150,12 +286,12 @@ export const register: Register = on => {
     const measured = await read($, fill)
     if (measured === null || measured.window === 0) return <Text dimColor>まだ測っていません。</Text>
 
-    const pr = await read($, pullRequest)
-    const { isLate, color } = tone(measured, pr)
+    await read($, tick)
+    const advice = await advise($, config, measured)
     const legend = [...measured.slices].sort((a, b) => b.tokens - a.tokens)
     const nameColumns = Math.max(...legend.map(slice => cellWidth(slice.name)), 4)
     const barColumns = Math.max(4, e.props.bodyColumns - 2 - nameColumns - 1 - 7)
-    const [from, to] = GRADIENTS[color]
+    const [from, to] = GRADIENTS[advice.isGood ? 'error' : tone(measured, config)]
     const pad = (text: string, width: number) => text + ' '.repeat(Math.max(0, width - cellWidth(text)))
 
     return (
@@ -185,24 +321,43 @@ export const register: Register = on => {
             )
           })}
         </Box>
-        <Text color={isLate ? 'error' : undefined} dimColor={!isLate} bold={isLate}>
-          {pr !== null ? `🧹 PR #${pr} を作ったので /clear` : isLate ? '🧹 /clear の頃合い' : `🧹 ${RED_AT}% で /clear`}
-        </Text>
+        {advice.isGood ? (
+          <Box flexDirection="column">
+            {advice.lines.map(line => (
+              <Text color="error" bold>{line}</Text>
+            ))}
+          </Box>
+        ) : (
+          <Text dimColor>{`🧹 ${config.redAt}% で /clear`}</Text>
+        )}
+        {advice.next.length > 0 && (
+          <Box flexDirection="column">
+            {nextRows(advice.next).map(row => (
+              <Text>{row}</Text>
+            ))}
+          </Box>
+        )}
       </Box>
     )
   })
 
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
+    if (e.agentId === undefined) {
+      const now = await $.clock.now()
+      await update($, lastTurnEnd, () => now)
+    }
     await measure($)
     return done
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const ran = await next(e)
-    if (ran.deny !== undefined || ran.isError === true || !CREATE.test(e.command)) return ran
-    const number = [...(ran.text ?? '').matchAll(PR_NUMBER)].at(-1)?.[1]
-    if (number !== undefined) await update($, pullRequest, () => Number(number))
+    if (ran.deny !== undefined || ran.isError === true || !config.breakPattern.test(e.command)) return ran
+    const number = GH_MERGE.exec(e.command)?.[1] ?? PRUNE_MERGED.exec(e.command)?.[1]
+    const label = number === undefined ? '区切りのコマンドが走った' : `PR #${number} をマージした`
+    const at = await $.clock.now()
+    await update($, breakpoint, () => ({ label, at }))
     return ran
   })
 
@@ -212,10 +367,11 @@ export const register: Register = on => {
 
     const { Box, Text } = $.ui.resolve(e)
     const beneath = await next(e)
-    const pr = await read($, pullRequest)
-    const { isLate, color } = tone(measured, pr)
+    await read($, tick)
+    const advice = await advise($, config, measured)
+    const color = advice.isGood ? 'error' : tone(measured, config)
     const percent = `${measured.percent}%`
-    const right = note(measured, pr, isLate)
+    const right = advice.isGood ? '' : `${thousands(measured.tokens)} / ${thousands(measured.window)}`
     const fixed = 2 + cellWidth(percent) + 2 + 2 + cellWidth(right) + SLACK_COLUMNS
     const columns = Math.max(8, e.props.bodyColumns - fixed)
     const cells = widths([...measured.slices.map(slice => slice.tokens), measured.free + measured.buffer], columns)
@@ -225,15 +381,19 @@ export const register: Register = on => {
       <Box flexDirection="column">
         <Text>
           <Text color={color}>● </Text>
-          <Text bold color={isLate ? 'error' : undefined}>{percent}</Text>
+          <Text bold color={advice.isGood ? 'error' : undefined}>{percent}</Text>
           <Text>  </Text>
           {measured.slices.map((slice, index) => (
             <Text color={slice.color}>{FULL.repeat(cells[index] ?? 0)}</Text>
           ))}
           <Text dimColor>{STEPS[0]?.repeat(cells[measured.slices.length] ?? 0)}</Text>
-          <Text color={isLate ? 'error' : undefined} dimColor={!isLate} bold={isLate}>  {right}</Text>
+          <Text dimColor>  {right}</Text>
         </Text>
-        {!isLate && (
+        {advice.isGood ? (
+          advice.lines.map(line => (
+            <Text color="error" bold>{line}</Text>
+          ))
+        ) : (
           <Text>
             {legend.map(slice => (
               <Text>
@@ -243,6 +403,9 @@ export const register: Register = on => {
             ))}
           </Text>
         )}
+        {nextRows(advice.next).map(row => (
+          <Text>{row}</Text>
+        ))}
         {beneath}
       </Box>
     )
