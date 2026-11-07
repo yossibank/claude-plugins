@@ -4,6 +4,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { TestRun } from '../types'
 
 const ANSI = /\x1b\[[0-9;]*m/g
+// 設定が空か壊れている時の値。plugin.json の userConfig の default と同じにしておく
 const DEFAULTS = {
   commandPattern: '\\bmake\\b(?:.*\\s)?test(?=\\s|$)',
   logPath: '.build/test.log',
@@ -18,6 +19,8 @@ const STALL_MS = 5 * 60 * 1000
 const SHOWN_FAILURES = 3
 const SIDE_COLUMNS = 34
 
+type Pattern = 'commandPattern' | 'passedLine' | 'failedLine' | 'finishedLine' | 'succeededLine'
+
 type Watched = {
   command: RegExp
   logPath: string
@@ -29,24 +32,41 @@ type Watched = {
 
 const text = (value: unknown, fallback: string) => (typeof value === 'string' && value.trim() !== '' ? value.trim() : fallback)
 
-const pattern = (value: unknown, fallback: string) => {
-  try {
-    return new RegExp(text(value, fallback))
-  } catch {
-    return new RegExp(fallback)
+// 壊れた正規表現は初めの値に戻し、その設定の名前を broken に集める。知らせるのは最初の Bash の時
+const watched = (options: Readonly<Record<string, unknown>>) => {
+  const broken: Pattern[] = []
+  const pattern = (name: Pattern) => {
+    try {
+      return new RegExp(text(options[name], DEFAULTS[name]))
+    } catch {
+      broken.push(name)
+      return new RegExp(DEFAULTS[name])
+    }
   }
+  const spec: Watched = {
+    command: pattern('commandPattern'),
+    logPath: text(options.logPath, DEFAULTS.logPath),
+    passed: pattern('passedLine'),
+    failed: pattern('failedLine'),
+    finished: pattern('finishedLine'),
+    succeeded: pattern('succeededLine'),
+  }
+  return { spec, broken }
 }
 
-const watched = (options: Readonly<Record<string, unknown>>): Watched => ({
-  command: pattern(options.commandPattern, DEFAULTS.commandPattern),
-  logPath: text(options.logPath, DEFAULTS.logPath),
-  passed: pattern(options.passedLine, DEFAULTS.passedLine),
-  failed: pattern(options.failedLine, DEFAULTS.failedLine),
-  finished: pattern(options.finishedLine, DEFAULTS.finishedLine),
-  succeeded: pattern(options.succeededLine, DEFAULTS.succeededLine),
-})
+// 見張り（走っているテストのコマンド）ごとの表示。id を鍵にして、重なった見張りが互いの表示と終わりを書き換えないようにする
+// shape の番号は、保存する値の形の版。形を変えた時に上げると、前の版の値は読まれず初めの値に戻る
+const runs = atom({ plugin: 'test-progress', key: 'runs' } as const, {}, { shape: 'runs-1' })
 
-const run = atom({ plugin: 'test-progress', key: 'run' } as const, null, { shape: 'run-2' })
+let serial = 0
+
+const put = ($: EngineInterface, id: string, change: (old: TestRun) => TestRun) =>
+  update($, runs, all => {
+    const old = all[id]
+    return old === undefined ? all : { ...all, [id]: change(old) }
+  })
+
+const drop = ($: EngineInterface, id: string) => update($, runs, all => Object.fromEntries(Object.entries(all).filter(([key]) => key !== id)))
 
 const join = (...parts: string[]) => parts.join('/').replace(/\/+/g, '/')
 
@@ -91,15 +111,15 @@ const clock = (ms: number) => {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 }
 
-const finish = async ($: EngineInterface, isPassed: boolean, isLearnt: boolean, isUnread: boolean) => {
-  const last = await read($, run)
-  if (last === null) return
+const finish = async ($: EngineInterface, id: string, isPassed: boolean, isLearnt: boolean, isUnread: boolean) => {
+  const last = (await read($, runs))[id]
+  if (last === undefined) return
   const took = last.now - last.startedAt
   if (isLearnt && last.passed + last.failed.length >= 1) {
     await $.store.set(`total:${last.label}`, last.passed + last.failed.length)
     await $.store.set(`durationMs:${last.label}`, took)
   }
-  await update($, run, () => null)
+  await drop($, id)
   if (isUnread) {
     $.ui.toast(`⚠ ${last.label} は終わったが、ログが見つからなかった（終了コードは${isPassed ? '成功' : '失敗'}） · ${clock(took)}`)
     return
@@ -113,7 +133,7 @@ const finish = async ($: EngineInterface, isPassed: boolean, isLearnt: boolean, 
 
 type Pulse = { changedAt: number; mtimeMs: number }
 
-const tick = async ($: EngineInterface, spec: Watched, log: string, startedAt: number, pulse: Pulse) => {
+const tick = async ($: EngineInterface, id: string, spec: Watched, log: string, startedAt: number, pulse: Pulse) => {
   const now = await $.clock.now()
   const mtimeMs = (await $.fs.exists(log)) ? (await $.fs.stat(log)).mtimeMs : 0
   const isFresh = mtimeMs >= startedAt - 1000
@@ -123,27 +143,31 @@ const tick = async ($: EngineInterface, spec: Watched, log: string, startedAt: n
   }
   const idle = () => (now - pulse.changedAt > STALL_MS ? 'stalled' : now - startedAt > GIVE_UP_MS ? 'given-up' : 'running')
   if (!isFresh) {
-    await update($, run, old => (old === null ? old : { ...old, now }))
+    await put($, id, old => ({ ...old, now }))
     return idle()
   }
   const counted = count(await $.fs.read(log), spec)
-  await update($, run, old => (old === null ? old : { ...old, now, passed: counted.passed, failed: counted.failed }))
+  await put($, id, old => ({ ...old, now, passed: counted.passed, failed: counted.failed }))
   if (counted.isFinished) return counted.isSucceeded ? 'passed' : 'failed'
   return idle()
 }
 
 const watch = async ($: EngineInterface, spec: Watched, log: string, label: string) => {
   const startedAt = await $.clock.now()
+  const id = `${startedAt}-${(serial += 1)}`
   const total = await $.store.get(`total:${label}`)
   const lastMs = await $.store.get(`durationMs:${label}`)
-  await update($, run, () => ({
-    label,
-    startedAt,
-    now: startedAt,
-    passed: 0,
-    failed: [],
-    total: typeof total === 'number' ? total : null,
-    lastMs: typeof lastMs === 'number' ? lastMs : null,
+  await update($, runs, all => ({
+    ...all,
+    [id]: {
+      label,
+      startedAt,
+      now: startedAt,
+      passed: 0,
+      failed: [],
+      total: typeof total === 'number' ? total : null,
+      lastMs: typeof lastMs === 'number' ? lastMs : null,
+    },
   }))
   const pulse: Pulse = { changedAt: startedAt, mtimeMs: 0 }
   let isBusy = false
@@ -152,14 +176,18 @@ const watch = async ($: EngineInterface, spec: Watched, log: string, label: stri
     if (isDone) return
     isDone = true
     timer.cancel()
-    if (result === 'given-up' || result === 'stalled') await update($, run, () => null)
-    else await finish($, result === 'passed' || result === 'exited-ok' || result === 'unread-ok', result === 'passed', result.startsWith('unread-'))
+    if (result === 'given-up' || result === 'stalled') await drop($, id)
+    else await finish($, id, result === 'passed' || result === 'exited-ok' || result === 'unread-ok', result === 'passed', result.startsWith('unread-'))
   }
   const timer = $.clock.every(POLL_MS, () => {
     if (isBusy || isDone) return
     isBusy = true
-    void tick($, spec, log, startedAt, pulse)
+    void tick($, id, spec, log, startedAt, pulse)
       .then(result => (result === 'running' ? undefined : stop(result)))
+      .catch(async error => {
+        $.ui.toast(`test-progress: 見張りを止めました: ${error instanceof Error ? error.message : String(error)}`.slice(0, 120))
+        await stop('given-up').catch(() => undefined)
+      })
       .finally(() => {
         isBusy = false
       })
@@ -167,7 +195,7 @@ const watch = async ($: EngineInterface, spec: Watched, log: string, label: stri
   return async (isPassed: boolean, isDenied = false) => {
     if (isDone) return
     if (isDenied) return stop('given-up')
-    const result = await tick($, spec, log, startedAt, pulse)
+    const result = await tick($, id, spec, log, startedAt, pulse)
     const exited = isPassed ? 'ok' : 'ng'
     await stop(result !== 'running' ? result : pulse.mtimeMs === 0 ? `unread-${exited}` : `exited-${exited}`)
   }
@@ -179,9 +207,14 @@ const bar = (done: number, total: number, columns: number) => {
 }
 
 export const register: Register = (on, options) => {
-  const spec = watched(options)
+  const { spec, broken } = watched(options)
+  let isTold = false
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    if (!isTold && broken.length > 0) {
+      isTold = true
+      $.ui.toast(`test-progress: ${broken.join('・')} の正規表現が正しくないので、初めの値で見張ります`)
+    }
     const found = testLog(e.command, await $.session.cwd(), spec)
     if (found === undefined) return next(e)
 
@@ -192,40 +225,46 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const current = await read($, run)
-    if (e.props.hasSurvey || current === null) return next(e)
+    const current = Object.entries(await read($, runs))
+    if (e.props.hasSurvey || current.length === 0) return next(e)
 
     const { Box, Text } = $.ui.resolve(e)
     const beneath = await next(e)
-    const done = current.passed + current.failed.length
-    const total = current.total === null ? null : Math.max(current.total, done)
-    const elapsed = current.now - current.startedAt
-    const left = current.lastMs === null ? null : current.lastMs - elapsed
     const columns = Math.max(10, (e.viewport?.columns ?? 80) - SIDE_COLUMNS)
-    const drawn = total === null ? null : bar(done, total, columns)
 
     return (
       <Box flexDirection="column">
-        <Text>
-          <Text bold>🧪 {current.label}  </Text>
-          {drawn !== null && (
-            <Text>
-              <Text dimColor>▕</Text>
-              <Text color={current.failed.length > 0 ? 'error' : 'success'}>{drawn.filled}</Text>
-              <Text dimColor>{drawn.empty}▏ </Text>
-            </Text>
-          )}
-          <Text>{total === null ? `${done} 本` : `${done} / ${total}`}</Text>
-        </Text>
-        <Text>
-          <Text color="success">   ✔ {current.passed}</Text>
-          <Text color={current.failed.length > 0 ? 'error' : undefined} dimColor={current.failed.length === 0}>  ✖ {current.failed.length}</Text>
-          <Text dimColor>   ⏱ {clock(elapsed)}{left !== null && left > 0 ? ` · 残り約 ${clock(left)}` : ''}</Text>
-        </Text>
-        {current.failed.slice(0, SHOWN_FAILURES).map(name => (
-          <Text color="error">   ✖ {name}</Text>
-        ))}
-        {current.failed.length > SHOWN_FAILURES && <Text dimColor>   ほか {current.failed.length - SHOWN_FAILURES} 本</Text>}
+        {current.map(([id, one]) => {
+          const done = one.passed + one.failed.length
+          const total = one.total === null ? null : Math.max(one.total, done)
+          const elapsed = one.now - one.startedAt
+          const left = one.lastMs === null ? null : one.lastMs - elapsed
+          const drawn = total === null ? null : bar(done, total, columns)
+          return (
+            <Box key={id} flexDirection="column">
+              <Text>
+                <Text bold>🧪 {one.label}  </Text>
+                {drawn !== null && (
+                  <Text>
+                    <Text dimColor>▕</Text>
+                    <Text color={one.failed.length > 0 ? 'error' : 'success'}>{drawn.filled}</Text>
+                    <Text dimColor>{drawn.empty}▏ </Text>
+                  </Text>
+                )}
+                <Text>{total === null ? `${done} 本` : `${done} / ${total}`}</Text>
+              </Text>
+              <Text>
+                <Text color="success">   ✔ {one.passed}</Text>
+                <Text color={one.failed.length > 0 ? 'error' : undefined} dimColor={one.failed.length === 0}>  ✖ {one.failed.length}</Text>
+                <Text dimColor>   ⏱ {clock(elapsed)}{left !== null && left > 0 ? ` · 残り約 ${clock(left)}` : ''}</Text>
+              </Text>
+              {one.failed.slice(0, SHOWN_FAILURES).map(name => (
+                <Text key={name} color="error">   ✖ {name}</Text>
+              ))}
+              {one.failed.length > SHOWN_FAILURES && <Text dimColor>   ほか {one.failed.length - SHOWN_FAILURES} 本</Text>}
+            </Box>
+          )
+        })}
         {beneath}
       </Box>
     )
