@@ -554,9 +554,12 @@ export const register: Register = (on, options) => {
 
   on('classic.SessionStart', async ($, e, next) => {
     const started = await next(e)
+    // /clear は新しいセッションとして続き、state が初めに戻るのに session.start が来ないので、ここで読み直す
     if (e.source === 'clear') {
       await restart($, config)
       await forget($)
+      await readClaude($)
+      await readRepo($, true)
     }
     return started
   })
