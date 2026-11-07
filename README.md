@@ -10,7 +10,7 @@
 | --- | --- |
 | [pr-browser](plugins/pr-browser) | `gh pr create` で作った PR のページを、[terminal-browser](https://github.com/zenbu-labs/terminal-browser) で右に開く。会話が 128 列より狭い時は下に開く |
 | [snapshot-gallery](plugins/snapshot-gallery) | `make snapshot` で描いた PNG を、直す前と後で左右に並べて pane に出す。`/snapshots <セット>` で開き、`j` と `k` で前と次に移る |
-| [context-gauge](plugins/context-gauge) | 文脈の埋まり具合を、種類ごとに色分けした棒で右の pane に出し、空きの多さを S〜D の評価で出す。pane を閉じている間は入力欄の上に 1 行で出す。キャッシュが切れるまでの時間も出す |
+| [context-gauge](plugins/context-gauge) | 文脈の埋まり具合を、種類ごとに色分けした棒で右の pane に出し、空きの多さを S〜D の評価で出す。pane を閉じている間は入力欄の上に 1 行で出し、キャッシュが切れるまでの時間も出す |
 | [test-progress](plugins/test-progress) | テストのコマンドの間、進みの棒と落ちたテストを入力欄の上に出し、終わったらトーストで知らせる。コマンドの出力を `.build/test.log` に残しておく |
 
 ## 🚀 入れ方
