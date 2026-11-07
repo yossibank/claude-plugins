@@ -9,6 +9,16 @@
       "name": "pr-browser",
       "source": "./plugins/pr-browser",
       "description": "gh pr create で PR を作ったら、terminal-browser で PR のページを右に開く"
+    },
+    {
+      "name": "snapshot-gallery",
+      "source": "./plugins/snapshot-gallery",
+      "description": "make snapshot で描いた PNG を、直す前と後で左右に並べて pane に出す"
+    },
+    {
+      "name": "context-gauge",
+      "source": "./plugins/context-gauge",
+      "description": "文脈の埋まり具合を種類ごとに色分けした棒で入力欄の上に出し、/clear の頃合いを知らせる"
     }
   ]
 }
