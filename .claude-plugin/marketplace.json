@@ -23,7 +23,7 @@
     {
       "name": "test-progress",
       "source": "./plugins/test-progress",
-      "description": "make test の間、進みの棒と落ちたテストを入力欄の上に出し、終わったらトーストで知らせる"
+      "description": "テストのコマンドの間、進みの棒と落ちたテストを入力欄の上に出し、終わったらトーストで知らせる"
     }
   ]
 }

@@ -50,7 +50,7 @@ test('落ちたら落ちた本数を知らせる', async ($, on) => {
   await $.tool.call({ tool: 'Bash', command: 'make -C /work test SIMULATOR=x' })
 
   expect(seen.reads).toContain('/work/.build/test.log')
-  expect(seen.toasts).toEqual(['✖ make test 1 本落ちた · 0:00'])
+  expect(seen.toasts).toEqual(['✖ make -C /work test 1 本落ちた · 0:00'])
 })
 
 test('裏で走らせた間は、前の回の数で進みの帯を出す', async ($, on) => {
@@ -84,7 +84,7 @@ test('make test 以外では何もしない', async ($, on) => {
 
 const OTHER_LOG = 'ok: a\nok: b\nok: c\nbad: login\nDONE\nGOOD\n'
 const OTHER = {
-  target: 'check',
+  commandPattern: '\\bswift test\\b',
   logPath: 'out/check.log',
   passedLine: '^ok: ',
   failedLine: '^bad: (.+)$',
@@ -92,20 +92,20 @@ const OTHER = {
   succeededLine: '^GOOD$',
 }
 
-test('options でターゲット・ログの置き場・行の形を変えられる', { options: OTHER }, async ($, on) => {
+test('options で見張るコマンド・ログの置き場・行の形を変えられる', { options: OTHER }, async ($, on) => {
   const seen = fresh()
   engine(on, OTHER_LOG.replace('bad: login\n', ''), seen)
 
   await $.tool.call({ tool: 'Bash', command: 'make test' })
   expect(seen.reads).toEqual([])
 
-  await $.tool.call({ tool: 'Bash', command: 'make check' })
+  await $.tool.call({ tool: 'Bash', command: 'swift test --parallel 2>&1 | tee out/check.log' })
   expect(seen.reads).toContain('/repo/out/check.log')
-  expect(seen.toasts).toEqual(['✔ make check 3 本通った · 0:00'])
+  expect(seen.toasts).toEqual(['✔ swift test 3 本通った · 0:00'])
   expect(seen.store.get('total')).toBe(3)
 })
 
-test('壊れた正規表現は初めの値に戻る', { options: { passedLine: '(' } }, async ($, on) => {
+test('壊れた正規表現は初めの値に戻る', { options: { passedLine: '(', commandPattern: '(' } }, async ($, on) => {
   const seen = fresh()
   engine(on, PASSED_LOG, seen)
 
@@ -129,9 +129,9 @@ test('落ちた回は総数を覚えない', { options: OTHER }, async ($, on) =
   seen.store.set('total', 10)
   engine(on, OTHER_LOG.replace('GOOD\n', ''), seen)
 
-  await $.tool.call({ tool: 'Bash', command: 'make check' })
+  await $.tool.call({ tool: 'Bash', command: 'swift test' })
 
-  expect(seen.toasts).toEqual(['✖ make check 1 本落ちた · 0:00'])
+  expect(seen.toasts).toEqual(['✖ swift test 1 本落ちた · 0:00'])
   expect(seen.store.get('total')).toBe(10)
   expect(seen.store.has('durationMs')).toBe(false)
 })
