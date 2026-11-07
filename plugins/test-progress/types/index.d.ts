@@ -10,6 +10,6 @@ export type TestRun = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'test-progress': { run: Shaped<TestRun | null> }
+    'test-progress': { runs: Shaped<Record<string, TestRun>> }
   }
 }

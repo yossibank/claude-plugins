@@ -8,6 +8,12 @@ const TITLE = '📸 Snapshots'
 const MAX_IMAGE_ROWS = 255
 const MIN_IMAGE_ROWS = 6
 const CHROME_ROWS = 10
+// 設定が空か壊れている時の値。plugin.json の userConfig の default と同じにしておく
+const DEFAULTS = {
+  commandPattern: 'make\\s+(?:-C\\s+\\S+\\s+)?snapshot\\s+SNAPSHOT=([\\w.-]+)',
+  snapshotsDir: '.build/snapshots',
+  beforeDir: '.build/snapshots-before',
+}
 const STATUS = {
   changed: { mark: '🟡', word: '変更', color: 'warning' },
   same: { mark: '⚪', word: '同じ', color: 'inactive' },
@@ -26,6 +32,7 @@ const WIDE: [number, number][] = [
   [0x20000, 0x3fffd],
 ]
 
+// shape の番号は、保存する値の形の版。形を変えた時に上げると、前の版の値は読まれず初めの値に戻る
 const gallery = atom({ plugin: 'snapshot-gallery', key: 'gallery' } as const, null, {
   shape: 'gallery-3',
 })
@@ -64,16 +71,19 @@ const moveBase = (start: string, command: string, at: number) => {
   return base
 }
 
+const text = (value: unknown, fallback: string) => (typeof value === 'string' && value.trim() !== '' ? value.trim() : fallback)
+
 const folders = (options: PluginOptions): Folders => ({
-  after: String(options.snapshotsDir ?? '.build/snapshots'),
-  before: String(options.beforeDir ?? '.build/snapshots-before'),
+  after: text(options.snapshotsDir, DEFAULTS.snapshotsDir),
+  before: text(options.beforeDir, DEFAULTS.beforeDir),
 })
 
+// 壊れた正規表現は初めの値に戻す。isBroken は、最初の Bash の時に toast で知らせる印
 const watcher = (options: PluginOptions) => {
   try {
-    return new RegExp(String(options.commandPattern ?? 'make\\s+(?:-C\\s+\\S+\\s+)?snapshot\\s+SNAPSHOT=([\\w.-]+)'))
+    return { pattern: new RegExp(text(options.commandPattern, DEFAULTS.commandPattern)), isBroken: false }
   } catch {
-    return null
+    return { pattern: new RegExp(DEFAULTS.commandPattern), isBroken: true }
   }
 }
 
@@ -98,6 +108,9 @@ const succeeded = async ($: EngineInterface, argv: string[], what: string) => {
   }
   return false
 }
+
+// 一時のフォルダを消す。消せなくても先へ進む
+const discard = ($: EngineInterface, path: string) => $.process.run(['rm', '-rf', path]).catch(() => undefined)
 
 const hashes = async ($: EngineInterface, files: string[]) => {
   if (files.length === 0) return new Map<string, string>()
@@ -192,7 +205,8 @@ const open = ($: EngineInterface) => $.ui.open({ id: PANE, title: TITLE })
 
 export const register: Register = (on, options) => {
   const dirs = folders(options)
-  const pattern = watcher(options)
+  const { pattern, isBroken } = watcher(options)
+  let isTold = false
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'snapshots', description: 'スナップショットの画廊を開く。引数にセットの名前を渡せる' })
@@ -214,7 +228,11 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-    const found = pattern === null ? null : e.command.match(pattern)
+    if (isBroken && !isTold) {
+      isTold = true
+      $.ui.toast('snapshot-gallery: commandPattern の正規表現が正しくないので、初めの値で見張ります')
+    }
+    const found = e.command.match(pattern)
     if (found === null) return next(e)
 
     const base = moveBase(await $.session.cwd(), e.command, found.index ?? 0)
@@ -231,7 +249,7 @@ export const register: Register = (on, options) => {
         (await succeeded($, ['mkdir', '-p', pending], '一時のフォルダの作成')) &&
         (await succeeded($, ['rsync', '-a', '--delete', '--include', '*.png', '--exclude', '*', `${afterDir}/`, `${pending}/`], '前の画像の写し'))
       if (!isReady) {
-        await $.process.run(['rm', '-rf', pending]).catch(() => undefined)
+        await discard($, pending)
         isCopied = false
       }
     }
@@ -240,11 +258,11 @@ export const register: Register = (on, options) => {
     try {
       ran = await next(e)
     } catch (error) {
-      if (isCopied) await $.process.run(['rm', '-rf', pending])
+      if (isCopied) await discard($, pending)
       throw error
     }
     if (ran.deny !== undefined || ran.isError === true) {
-      if (isCopied) await $.process.run(['rm', '-rf', pending])
+      if (isCopied) await discard($, pending)
       return ran
     }
     if (isCopied) {
@@ -259,14 +277,14 @@ export const register: Register = (on, options) => {
         if (isKept) await succeeded($, ['rm', '-rf', backup], '退避の削除')
       } else {
         if (isKept) await succeeded($, ['mv', backup, beforeDir], '退避の復元')
-        await $.process.run(['rm', '-rf', pending]).catch(() => undefined)
+        await discard($, pending)
       }
     }
 
     const drawn = await collect($, base, set, dirs)
     if (drawn.cases.length > 0) {
       await update($, gallery, () => drawn)
-      void open($)
+      void open($).catch(error => $.ui.toast(fail('画廊の表示', error instanceof Error ? error.message : String(error))))
     }
     return ran
   })
@@ -332,7 +350,7 @@ export const register: Register = (on, options) => {
           </Box>
           <Text>
             {(['changed', 'same', 'added'] as const).map(status => (
-              <Text>
+              <Text key={status}>
                 {STATUS[status].mark} <Text dimColor>{STATUS[status].word}</Text> {count(status)}{'   '}
               </Text>
             ))}

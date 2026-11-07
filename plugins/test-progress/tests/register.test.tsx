@@ -5,14 +5,15 @@ type On = Parameters<TestBody>[1]
 const PASSED_LOG = '\x1b[32m✔\x1b[0m a() (0.1 seconds)\n    \x1b[32m✔\x1b[0m b() (0.1 seconds)\n\x1b[32;1mTest Succeeded\x1b[0m\n'
 const FAILED_LOG = '    ✔ a() (0.1 seconds)\n    ✖ monthTotalsSkipFuture(), Expectation failed\nTest Failed\n'
 
-const engine = (on: On, log: string, seen: { toasts: string[]; reads: string[]; store: Map<string, unknown> }, cwd = '/repo', mtimeMs = 1_000_000, isClockOwn = false, isLogMissing = false, deny: Record<string, unknown> = {}) => {
+const engine = (on: On, log: string | Error, seen: { toasts: string[]; reads: string[]; store: Map<string, unknown> }, cwd = '/repo', mtimeMs: number | (() => number) = 1_000_000, isClockOwn = false, isLogMissing = false, deny?: string) => {
   on('session.cwd', () => ({ value: cwd }))
-  on('tool.call', () => ('deny' in deny ? deny : { result: { stdout: '', stderr: '' }, text: '' }))
+  on('tool.call', () => (deny === undefined ? { result: { stdout: '', stderr: '' }, text: '' } : { deny }))
   if (!isClockOwn) on('clock.now', () => ({ value: 1_000_000 }))
   on('fs.exists', () => ({ value: !isLogMissing }))
-  on('fs.stat', () => ({ value: { mtimeMs } as never }))
+  on('fs.stat', () => ({ value: { mtimeMs: typeof mtimeMs === 'function' ? mtimeMs() : mtimeMs } as never }))
   on('fs.read', (_, e) => {
     seen.reads.push(e.path)
+    if (log instanceof Error) throw log
     return { value: log }
   })
   on('store.get', (_, e) => ({ value: seen.store.get(e.key) }))
@@ -130,8 +131,9 @@ test('壊れた正規表現は初めの値に戻る', { options: { passedLine: '
   engine(on, PASSED_LOG, seen)
 
   await $.tool.call({ tool: 'Bash', command: 'make test' })
+  await $.tool.call({ tool: 'Bash', command: 'make test' })
 
-  expect(seen.toasts).toEqual(['✔ make test 2 本通った · 0:00'])
+  expect(seen.toasts).toEqual(['test-progress: commandPattern・passedLine の正規表現が正しくないので、初めの値で見張ります', '✔ make test 2 本通った · 0:00', '✔ make test 2 本通った · 0:00'])
 })
 
 test('cd のあとの make は、動かした先を基点にする', async ($, on) => {
@@ -211,10 +213,102 @@ test('ログが古いまま終わった時も、通ったとは言わない', as
 
 test('実行を拒まれた時は、トーストを出さずに帯だけを消す', async ($, on) => {
   const seen = fresh()
-  engine(on, PASSED_LOG, seen, '/repo', 1_000_000, false, false, { deny: 'no' })
+  engine(on, PASSED_LOG, seen, '/repo', 1_000_000, false, false, 'no')
 
   await $.tool.call({ tool: 'Bash', command: 'make test' })
 
   expect(seen.toasts).toEqual([])
   expect(seen.store.get('total:make test')).toBeUndefined()
+})
+
+const PROPS = { hasSurvey: false, isWorking: true, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} }
+
+const mountBand = ($: Parameters<TestBody>[0]) => $.ui.mount({ plugin: 'test-progress', surface: 'terminal', component: 'AbovePrompt', props: PROPS, viewport: { columns: 80, rows: 40 } })
+
+test('ログが変わり続けても、1 時間たったら帯を消して止める', async ($, on) => {
+  const seen = fresh()
+  const clock = mock.clock(on, { now: 1_000_000 })
+  let mtime = 1_000_000
+  engine(on, '✔ a() (0.1 seconds)\n', seen, '/repo', () => (mtime += 1000), true)
+
+  await $.tool.call({ tool: 'Bash', command: 'make test', run_in_background: true })
+  await clock.advance(30 * 60_000)
+  const during = await mountBand($)
+  expect(await during.find({ type: 'Text', text: /🧪 make test/ })).toBeDefined()
+  await during.unmount()
+
+  await clock.advance(31 * 60_000)
+  const after = await mountBand($)
+  expect(await after.find({ type: 'Text', text: /🧪 make test/ })).toBeUndefined()
+  await after.unmount()
+  expect(seen.toasts).toEqual([])
+})
+
+test('落ちたテストは 3 本まで名前を出し、残りは「ほか N 本」にまとめる', async ($, on) => {
+  const seen = fresh()
+  const clock = mock.clock(on, { now: 1_000_000 })
+  engine(on, '✖ one, x\n✖ two, x\n✖ three, x\n✖ four, x\n✖ five, x\n', seen, '/repo', 1_000_000, true)
+
+  await $.tool.call({ tool: 'Bash', command: 'make test', run_in_background: true })
+  await clock.advance(1000)
+
+  const ui = await mountBand($)
+  expect(await ui.find({ type: 'Text', text: /✖ three/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /✖ four/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /ほか 2 本/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('見張りが重なっても、後の開始は前の表示と終わりを書き換えない', async ($, on) => {
+  const seen = fresh()
+  engine(on, PASSED_LOG, seen)
+
+  await $.tool.call({ tool: 'Bash', command: 'make test', run_in_background: true })
+  await $.tool.call({ tool: 'Bash', command: 'make test' })
+
+  const ui = await mountBand($)
+  expect(await ui.find({ type: 'Text', text: /🧪 make test/ })).toBeDefined()
+  await ui.unmount()
+  expect(seen.toasts).toEqual(['✔ make test 2 本通った · 0:00'])
+})
+
+test('ログを読むのに失敗したら、トーストで知らせて見張りを止める', async ($, on) => {
+  const seen = fresh()
+  const clock = mock.clock(on, { now: 1_000_000 })
+  engine(on, new Error('読めない'), seen, '/repo', 1_000_000, true)
+
+  await $.tool.call({ tool: 'Bash', command: 'make test', run_in_background: true })
+  await clock.advance(3000)
+
+  expect(seen.toasts).toHaveLength(1)
+  expect(seen.toasts[0]).toMatch(/^test-progress: 見張りを止めました: /)
+  const ui = await mountBand($)
+  expect(await ui.find({ type: 'Text', text: /🧪 make test/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('同じ名前の落ちたテストが重なっても、1 本ずつ出す', async ($, on) => {
+  const seen = fresh()
+  const clock = mock.clock(on, { now: 1_000_000 })
+  engine(on, '✖ same, x\n✖ same, y\n', seen, '/repo', 1_000_000, true)
+
+  await $.tool.call({ tool: 'Bash', command: 'make test', run_in_background: true })
+  await clock.advance(1000)
+
+  const ui = await mountBand($)
+  expect(await ui.find({ type: 'Text', text: /🧪 make test/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('session.start で、残っていた見張りの行を消す', async ($, on) => {
+  const seen = fresh()
+  engine(on, '', seen)
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.tool.call({ tool: 'Bash', command: 'make test', run_in_background: true })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const ui = await mountBand($)
+  expect(await ui.find({ type: 'Text', text: /🧪 make test/ })).toBeUndefined()
+  await ui.unmount()
 })

@@ -10,15 +10,17 @@ const BEFORE = DEFAULT_BEFORE
 
 const file = (name: string, mtimeMs: number) => ({ name, kind: 'file' as const, size: 1, mtimeMs, isLink: false })
 
-type Setup = { root?: string; after?: string; before?: string; failure?: Record<string, unknown>; exit?: Record<string, number>; missing?: string[]; extra?: string[]; toasts?: string[] }
+type Setup = { root?: string; after?: string; before?: string; failure?: Record<string, unknown>; exit?: Record<string, number>; missing?: string[]; extra?: string[]; toasts?: string[]; afterMs?: number; beforeMs?: number; isOpenBroken?: boolean }
 
 const engine = (on: On, ran: string[][], setup: Setup = {}) => {
   const root = setup.root ?? ROOT
   const AFTER = setup.after ?? DEFAULT_AFTER
   const BEFORE = setup.before ?? DEFAULT_BEFORE
+  const afterMs = setup.afterMs ?? 2
+  const beforeMs = setup.beforeMs ?? 1
   const dirs = new Map([
-    [AFTER, [file('review-balance-narrow.png', 2), file('review-list-narrow.png', 2), file('review-new-narrow.png', 2)]],
-    [BEFORE, [file('review-balance-narrow.png', 1), file('review-list-narrow.png', 1)]],
+    [AFTER, [file('review-balance-narrow.png', afterMs), file('review-list-narrow.png', afterMs), file('review-new-narrow.png', afterMs)]],
+    [BEFORE, [file('review-balance-narrow.png', beforeMs), file('review-list-narrow.png', beforeMs)]],
   ])
   const hash: Record<string, string> = {
     [`${AFTER}/review-balance-narrow.png`]: 'b2',
@@ -34,7 +36,10 @@ const engine = (on: On, ran: string[][], setup: Setup = {}) => {
     setup.toasts?.push(e.text)
     return { value: undefined }
   })
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.open', () => {
+    if (setup.isOpenBroken === true) throw new Error('開けない')
+    return { value: { isPlaced: true } }
+  })
   on('fs.exists', (_, e) => ({ value: !setup.missing?.includes(e.path) && (dirs.has(e.path) || (setup.extra?.includes(e.path) ?? false)) }))
   on('fs.list', (_, e) => ({ value: dirs.get(e.path ?? '') ?? [] }))
   on('tool.call', () => ({ result: { stdout: '', stderr: '' }, text: '', ...setup.failure }))
@@ -82,7 +87,7 @@ test('描く前に古い PNG を取っておき、描いた後に前と後を並
   await ui.unmount()
 })
 
-test('l で次の場合に移る', async ($, on) => {
+test('k で次の場合に移る', async ($, on) => {
   engine(on, [])
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
   await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
@@ -195,6 +200,9 @@ test('セットの名前が上のフォルダを指す時は、写しも消し�
   expect(ran.some(argv => argv[0] === 'rm' || argv[0] === 'rsync' || argv[0] === 'mv')).toBe(false)
 })
 
+const runCommand = ($: Parameters<TestBody>[0], args: string) =>
+  $.command.run({ command: 'snapshots', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+
 const start = (setup: Setup) => async ($: Parameters<TestBody>[0], on: On, ran: string[][]) => {
   engine(on, ran, setup)
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
@@ -249,16 +257,16 @@ test('sips が失敗したら toast で知らせる', async ($, on) => {
 test('/snapshots は不正なセットの名前を断り、state を上書きしない', async ($, on) => {
   await start({})($, on, [])
 
-  expect(await $.command.run({ command: 'snapshots', args: '../x' })).toMatchObject({ text: 'セットの名前が正しくありません' })
-  expect(await $.command.run({ command: 'snapshots', args: 'a..b' })).toMatchObject({ text: 'セットの名前が正しくありません' })
+  expect(await runCommand($, '../x')).toMatchObject({ text: 'セットの名前が正しくありません' })
+  expect(await runCommand($, 'a..b')).toMatchObject({ text: 'セットの名前が正しくありません' })
 })
 
 test('/snapshots は画像が 0 件のセットを断り、描いた state を残す', async ($, on) => {
   await start({})($, on, [])
   await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
 
-  expect(await $.command.run({ command: 'snapshots', args: 'empty' })).toMatchObject({ text: 'empty の画像がありません' })
-  expect(await $.command.run({ command: 'snapshots', args: '' })).toMatchObject({ text: 'review のスナップショットを開きました。' })
+  expect(await runCommand($, 'empty')).toMatchObject({ text: 'empty の画像がありません' })
+  expect(await runCommand($, '')).toMatchObject({ text: 'review のスナップショットを開きました。' })
 })
 
 test('戻しの mv も失敗したら、toast を重ねて知らせる', async ($, on) => {
@@ -308,4 +316,79 @@ test('.old を戻せなかったら、入れ替えず .old を消さない', asy
   expect(toasts).toEqual(['snapshot-gallery: 退避の復元に失敗しました: boom'])
   expect(ran).not.toContainEqual(['mv', `${BEFORE}.pending`, BEFORE])
   expect(ran).not.toContainEqual(['rm', '-rf', `${BEFORE}.old`])
+})
+
+// 時刻は端末の時刻帯で表すので、期待する文字は同じ時刻帯の日時から作る
+const at = (month: number, day: number, hour: number, minute: number) => new Date(2026, month - 1, day, hour, minute).getTime()
+
+test('前と後の下に、画像を描いた日時を出す。前の画像が無ければ「なし」', async ($, on) => {
+  await start({ afterMs: at(11, 7, 9, 5), beforeMs: at(1, 2, 23, 45) })($, on, [])
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: /^╰─ 01\/02 23:45 ─+╯$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^╰─ 11\/07 09:05 ─+╯$/ })).toBeDefined()
+  await ui.press({ key: 'next' })
+  await ui.press({ key: 'next' })
+  expect(await ui.find({ type: 'Text', text: /^╰─ なし ─+╯$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('c で変更のあるものだけに絞り、もう一度でもどす', async ($, on) => {
+  await start({})($, on, [])
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: /^1 \/ 3$/ })).toBeDefined()
+  await ui.press({ key: 'changed-only' })
+  expect(await ui.find({ type: 'Text', text: /^1 \/ 2$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /list-narrow/ })).toBeUndefined()
+  await ui.press({ key: 'changed-only' })
+  expect(await ui.find({ type: 'Text', text: /^1 \/ 3$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('o で後の画像を Finder で開く', async ($, on) => {
+  const ran: string[][] = []
+  await start({})($, on, ran)
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'finder' })
+  expect(ran).toContainEqual(['open', '-R', `${AFTER}/review-balance-narrow.png`])
+  await ui.unmount()
+})
+
+test('壊れた正規表現は初めの値に戻り、最初の Bash で toast で知らせる', { options: { commandPattern: '(' } }, async ($, on) => {
+  const ran: string[][] = []
+  const toasts: string[] = []
+  await start({ toasts })($, on, ran)
+
+  await $.tool.call({ tool: 'Bash', command: 'make verify' })
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+
+  expect(toasts).toEqual(['snapshot-gallery: commandPattern の正規表現が正しくないので、初めの値で見張ります'])
+  expect(ran).toContainEqual(['mv', `${BEFORE}.pending`, BEFORE])
+})
+
+test('画廊を開けなかったら、toast で知らせる', async ($, on) => {
+  const toasts: string[] = []
+  await start({ isOpenBroken: true, toasts })($, on, [])
+
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+  for (let i = 0; i < 20; i += 1) await Promise.resolve()
+
+  expect(toasts).toHaveLength(1)
+  expect(toasts[0]).toMatch(/^snapshot-gallery: 画廊の表示に失敗しました: /)
+})
+
+test('設定が空か空白だけの時は、初めの値に戻す', { options: { commandPattern: '  ', snapshotsDir: '', beforeDir: ' ' } }, async ($, on) => {
+  const ran: string[][] = []
+  await start({})($, on, ran)
+
+  await $.tool.call({ tool: 'Bash', command: 'make verify' })
+  expect(ran).toEqual([])
+
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+  expect(ran).toContainEqual(['mv', `${BEFORE}.pending`, BEFORE])
 })
