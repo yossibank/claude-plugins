@@ -145,8 +145,29 @@ test('pane: どの行も幅いっぱいで、はみ出さない', async ($, on) 
   for (const columns of [46, 30, 22]) {
     const found = await lines($, columns)
     expect(found.length).toBeGreaterThan(20)
-    for (const line of found) expect(cells(line)).toBe(Math.max(20, columns - 2))
+    for (const line of found) expect(cells(line)).toBe(columns - 2)
   }
+})
+
+test('pane: 表が描けないほど狭ければ、罫線を外して幅に収める', async ($, on) => {
+  engine(on, 41)
+  await start($)
+
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 12 } })
+  const texts = (await ui.findAll({ type: 'Text' })).map(element => element.text)
+  await ui.unmount()
+  expect(texts.some(text => /^model Op/.test(text))).toBe(true)
+  for (const text of texts) expect(cells(text)).toBeLessThanOrEqual(10)
+})
+
+test('pane: 名前の知らない上限も、割合を出したまま幅に収める', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.session.measure({ context: { window: 200000 }, rateLimits: [{ kind: 'weekly_opus', percentUsed: 20 }], cost: { usd: 1 }, changed: ['rateLimits'] } as never)
+
+  const line = (await lines($)).find(text => /weekly_opus/.test(text)) ?? ''
+  expect(line).toMatch(/ 20% │$/)
+  expect(cells(line)).toBe(44)
 })
 
 test('pane: Claude の表に、モデルと費用を出し、版を下の罫線に埋める', async ($, on) => {
@@ -412,6 +433,17 @@ test('入力欄の上: 作業中は、今の作業の行を上に足す', async 
   expect(found[0]).toBe('● 画面を直しています │ ✓ Edit: a.ts')
   await $.turn.complete(done())
   expect(await bandLines($)).toHaveLength(1)
+})
+
+test('入力欄の上: 今の作業の行がちょうど埋まっても、後ろを切った印に … を付ける', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await working($)
+  await $.tool.call({ tool: 'Edit', file_path: '/repo/a.ts' } as never)
+
+  const line = (await bandLines($, 22))[0] ?? ''
+  expect(line).toMatch(/…$/)
+  expect(cells(line)).toBeLessThanOrEqual(20)
 })
 
 test('入力欄の上: 狭ければブランチを … で縮めて幅に収める', async ($, on) => {

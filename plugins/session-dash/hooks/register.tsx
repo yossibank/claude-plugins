@@ -45,7 +45,6 @@ const ICON = {
   next: '\uf04e',
   now: '\u{F140B}',
 }
-const MIN_INNER = 20
 const GRADES = [
   { name: 'S', from: 0.7, color: '#7ee0ff' },
   { name: 'A', from: 0.5, color: '#7fe0a0' },
@@ -456,7 +455,8 @@ const fitSegs = (segs: readonly Seg[], width: number): Seg[] => {
       used += cells
       continue
     }
-    out.push({ ...seg, text: fit(seg.text, width - used) })
+    // ちょうど収まっても後ろが切れるので、… で終える
+    out.push({ ...seg, text: fit(`${seg.text} `, width - used) })
     break
   }
   return out
@@ -501,10 +501,15 @@ const gradient = (ratio: number, columns: number, stops: readonly string[], trac
 const valueWidth = (inner: number, keyWidth: number) => Math.max(1, inner - keyWidth - 7)
 
 // 題を上の罫線に、note を下の罫線に埋めた 2 列の表
+const keyWidthOf = (rows: [Seg[], Seg[]][]) => Math.max(1, ...rows.map(([key]) => segWidth(key)))
+
 const card = (title: Seg[], rows: [Seg[], Seg[]][], inner: number, note?: Seg[]): Seg[][] => {
   const line = TN.line
-  const keyWidth = Math.max(1, ...rows.map(([key]) => segWidth(key)))
-  const value = valueWidth(inner, keyWidth)
+  const keyWidth = keyWidthOf(rows)
+  const value = inner - keyWidth - 7
+  // 表が描けないほど狭ければ、罫線を外して 1 行ずつ並べる
+  if (value < 4)
+    return [fitSegs(title, inner), ...rows.map(([key, cell]) => fitSegs([...key, { text: ' ' }, ...cell], inner)), ...(note === undefined ? [] : [fitSegs(note, inner)])]
   const head = fitSegs(title, Math.max(1, inner - 5))
   const out: Seg[][] = [[{ text: '╭─ ', color: line }, ...head, { text: ` ${'─'.repeat(Math.max(0, inner - 5 - segWidth(head)))}╮`, color: line }]]
   for (const [key, cell] of rows)
@@ -653,7 +658,7 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
-    const inner = Math.max(MIN_INNER, e.props.bodyColumns - 2)
+    const inner = Math.max(1, e.props.bodyColumns - 2)
     const now = await $.clock.now()
     await read($, tick)
     const info = await read($, claude)
@@ -691,7 +696,8 @@ export const register: Register = (on, options) => {
 
     const limits = info?.limits ?? []
     if (limits.length > 0) {
-      const value = valueWidth(inner, 2)
+      const keys = limits.map((limit): Seg[] => [{ text: LIMIT_NAMES[limit.kind] ?? limit.kind, color: TN.fg }])
+      const value = valueWidth(inner, keyWidthOf(keys.map((key): [Seg[], Seg[]] => [key, []])))
       const resets = limits.map(limit => untilReset(limit.resetsAt, now))
       // 棒の長さをそろえるため、戻るまでの時間は一番長いものの幅で取る
       const resetWidth = Math.max(0, ...resets.map(until => cellWidth(until)))
@@ -705,7 +711,7 @@ export const register: Register = (on, options) => {
             const reset = isResetShown ? ` ${' '.repeat(resetWidth - cellWidth(resets[index] ?? ''))}${resets[index] ?? ''}` : ''
             const columns = Math.max(1, value - 5 - (isResetShown ? resetWidth + 1 : 0))
             return [
-              [{ text: LIMIT_NAMES[limit.kind] ?? limit.kind, color: TN.fg }],
+              keys[index] ?? [],
               [...gradient(limit.percentUsed / 100, columns, HEAT, TN.line), { text: ` ${percent}`, color: heat(limit.percentUsed / 100), bold: true }, { text: reset, color: TN.comment }],
             ]
           }),
@@ -790,7 +796,7 @@ export const register: Register = (on, options) => {
     const summary = doing.task ?? doing.said
     const info = await read($, claude)
     const git = await read($, repo)
-    const width = Math.max(MIN_INNER, e.props.bodyColumns - SLACK_COLUMNS)
+    const width = Math.max(1, e.props.bodyColumns - SLACK_COLUMNS)
 
     const working: Seg[] = []
     if (doing.isWorking && (summary !== null || step !== null)) {
