@@ -210,6 +210,11 @@ export const register: Register = (on, options) => {
   const { spec, broken } = watched(options)
   let isTold = false
 
+  on('session.start', async ($, e, next) => {
+    await update($, runs, () => ({}))
+    return next(e)
+  })
+
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     if (!isTold && broken.length > 0) {
       isTold = true
@@ -225,7 +230,10 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const current = Object.entries(await read($, runs))
+    const now = await $.clock.now()
+    const all = Object.entries(await read($, runs))
+    const current = all.filter(([, one]) => now - one.startedAt <= GIVE_UP_MS)
+    if (current.length < all.length) await update($, runs, old => Object.fromEntries(Object.entries(old).filter(([, one]) => now - one.startedAt <= GIVE_UP_MS)))
     if (e.props.hasSurvey || current.length === 0) return next(e)
 
     const { Box, Text } = $.ui.resolve(e)
@@ -258,8 +266,8 @@ export const register: Register = (on, options) => {
                 <Text color={one.failed.length > 0 ? 'error' : undefined} dimColor={one.failed.length === 0}>  ✖ {one.failed.length}</Text>
                 <Text dimColor>   ⏱ {clock(elapsed)}{left !== null && left > 0 ? ` · 残り約 ${clock(left)}` : ''}</Text>
               </Text>
-              {one.failed.slice(0, SHOWN_FAILURES).map(name => (
-                <Text key={name} color="error">   ✖ {name}</Text>
+              {one.failed.slice(0, SHOWN_FAILURES).map((name, index) => (
+                <Text key={`${index}-${name}`} color="error">   ✖ {name}</Text>
               ))}
               {one.failed.length > SHOWN_FAILURES && <Text dimColor>   ほか {one.failed.length - SHOWN_FAILURES} 本</Text>}
             </Box>

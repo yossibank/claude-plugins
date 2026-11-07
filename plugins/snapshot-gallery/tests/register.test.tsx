@@ -381,3 +381,14 @@ test('画廊を開けなかったら、toast で知らせる', async ($, on) => 
   expect(toasts).toHaveLength(1)
   expect(toasts[0]).toMatch(/^snapshot-gallery: 画廊の表示に失敗しました: /)
 })
+
+test('設定が空か空白だけの時は、初めの値に戻す', { options: { commandPattern: '  ', snapshotsDir: '', beforeDir: ' ' } }, async ($, on) => {
+  const ran: string[][] = []
+  await start({})($, on, ran)
+
+  await $.tool.call({ tool: 'Bash', command: 'make verify' })
+  expect(ran).toEqual([])
+
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+  expect(ran).toContainEqual(['mv', `${BEFORE}.pending`, BEFORE])
+})

@@ -286,3 +286,29 @@ test('ログを読むのに失敗したら、トーストで知らせて見張�
   expect(await ui.find({ type: 'Text', text: /🧪 make test/ })).toBeUndefined()
   await ui.unmount()
 })
+
+test('同じ名前の落ちたテストが重なっても、1 本ずつ出す', async ($, on) => {
+  const seen = fresh()
+  const clock = mock.clock(on, { now: 1_000_000 })
+  engine(on, '✖ same, x\n✖ same, y\n', seen, '/repo', 1_000_000, true)
+
+  await $.tool.call({ tool: 'Bash', command: 'make test', run_in_background: true })
+  await clock.advance(1000)
+
+  const ui = await mountBand($)
+  expect(await ui.find({ type: 'Text', text: /🧪 make test/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('session.start で、残っていた見張りの行を消す', async ($, on) => {
+  const seen = fresh()
+  engine(on, '', seen)
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.tool.call({ tool: 'Bash', command: 'make test', run_in_background: true })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const ui = await mountBand($)
+  expect(await ui.find({ type: 'Text', text: /🧪 make test/ })).toBeUndefined()
+  await ui.unmount()
+})

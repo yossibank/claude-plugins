@@ -71,15 +71,17 @@ const moveBase = (start: string, command: string, at: number) => {
   return base
 }
 
+const text = (value: unknown, fallback: string) => (typeof value === 'string' && value.trim() !== '' ? value.trim() : fallback)
+
 const folders = (options: PluginOptions): Folders => ({
-  after: String(options.snapshotsDir ?? DEFAULTS.snapshotsDir),
-  before: String(options.beforeDir ?? DEFAULTS.beforeDir),
+  after: text(options.snapshotsDir, DEFAULTS.snapshotsDir),
+  before: text(options.beforeDir, DEFAULTS.beforeDir),
 })
 
 // 壊れた正規表現は初めの値に戻す。isBroken は、最初の Bash の時に toast で知らせる印
 const watcher = (options: PluginOptions) => {
   try {
-    return { pattern: new RegExp(String(options.commandPattern ?? DEFAULTS.commandPattern)), isBroken: false }
+    return { pattern: new RegExp(text(options.commandPattern, DEFAULTS.commandPattern)), isBroken: false }
   } catch {
     return { pattern: new RegExp(DEFAULTS.commandPattern), isBroken: true }
   }
