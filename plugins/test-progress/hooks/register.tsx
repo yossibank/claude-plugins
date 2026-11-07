@@ -164,8 +164,9 @@ const watch = async ($: EngineInterface, spec: Watched, log: string, label: stri
         isBusy = false
       })
   })
-  return async (isPassed: boolean) => {
+  return async (isPassed: boolean, isDenied = false) => {
     if (isDone) return
+    if (isDenied) return stop('given-up')
     const result = await tick($, spec, log, startedAt, pulse)
     const exited = isPassed ? 'ok' : 'ng'
     await stop(result !== 'running' ? result : pulse.mtimeMs === 0 ? `unread-${exited}` : `exited-${exited}`)
@@ -186,7 +187,7 @@ export const register: Register = (on, options) => {
 
     const end = await watch($, spec, found.log, found.label)
     const ran = await next(e)
-    if (e.run_in_background !== true) await end(ran.deny === undefined && ran.isError !== true)
+    if (e.run_in_background !== true) await end(ran.deny === undefined && ran.isError !== true, ran.deny !== undefined)
     return ran
   })
 

@@ -10,7 +10,7 @@ const BEFORE = DEFAULT_BEFORE
 
 const file = (name: string, mtimeMs: number) => ({ name, kind: 'file' as const, size: 1, mtimeMs, isLink: false })
 
-type Setup = { root?: string; after?: string; before?: string; failure?: Record<string, unknown>; exit?: Record<string, number>; toasts?: string[] }
+type Setup = { root?: string; after?: string; before?: string; failure?: Record<string, unknown>; exit?: Record<string, number>; missing?: string[]; extra?: string[]; toasts?: string[] }
 
 const engine = (on: On, ran: string[][], setup: Setup = {}) => {
   const root = setup.root ?? ROOT
@@ -35,7 +35,7 @@ const engine = (on: On, ran: string[][], setup: Setup = {}) => {
     return { value: undefined }
   })
   on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('fs.exists', (_, e) => ({ value: dirs.has(e.path) }))
+  on('fs.exists', (_, e) => ({ value: !setup.missing?.includes(e.path) && (dirs.has(e.path) || (setup.extra?.includes(e.path) ?? false)) }))
   on('fs.list', (_, e) => ({ value: dirs.get(e.path ?? '') ?? [] }))
   on('tool.call', () => ({ result: { stdout: '', stderr: '' }, text: '', ...setup.failure }))
   on('process.run', (_, e) => {
@@ -48,7 +48,8 @@ const engine = (on: On, ran: string[][], setup: Setup = {}) => {
         : argv[0] === 'sips'
           ? files.map(path => `${path}\n  pixelWidth: 640\n  pixelHeight: 960`).join('\n')
           : ''
-    const exitCode = (argv[0] === 'mv' && argv[1] === `${BEFORE}.pending` ? setup.exit?.['mv-pending'] : setup.exit?.[argv[0] ?? '']) ?? 0
+    const mv = argv[1] === `${BEFORE}.pending` ? 'mv-pending' : argv[1] === BEFORE ? 'mv-backup' : 'mv-restore'
+    const exitCode = (argv[0] === 'mv' ? setup.exit?.[mv] : setup.exit?.[argv[0] ?? '']) ?? 0
     return { value: { exitCode, stdout: exitCode === 0 ? stdout : '', stderr: exitCode === 0 ? '' : 'boom', isStdoutTruncated: false, isStderrTruncated: false } }
   })
 }
@@ -258,4 +259,53 @@ test('/snapshots は画像が 0 件のセットを断り、描いた state を�
 
   expect(await $.command.run({ command: 'snapshots', args: 'empty' })).toMatchObject({ text: 'empty の画像がありません' })
   expect(await $.command.run({ command: 'snapshots', args: '' })).toMatchObject({ text: 'review のスナップショットを開きました。' })
+})
+
+test('戻しの mv も失敗したら、toast を重ねて知らせる', async ($, on) => {
+  const ran: string[][] = []
+  const toasts: string[] = []
+  await start({ exit: { 'mv-pending': 1, 'mv-restore': 1 }, toasts })($, on, ran)
+
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+
+  expect(toasts).toEqual(['snapshot-gallery: 前の画像の入れ替えに失敗しました: boom', 'snapshot-gallery: 退避の復元に失敗しました: boom'])
+  expect(ran).not.toContainEqual(['rm', '-rf', BEFORE])
+})
+
+test('退避の mv が失敗したら、before を動かさず入れ替えもしない', async ($, on) => {
+  const ran: string[][] = []
+  const toasts: string[] = []
+  await start({ exit: { 'mv-backup': 1 }, toasts })($, on, ran)
+
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+
+  expect(toasts).toEqual(['snapshot-gallery: 前の画像の退避に失敗しました: boom'])
+  expect(ran).not.toContainEqual(['mv', `${BEFORE}.pending`, BEFORE])
+  expect(ran).not.toContainEqual(['mv', `${BEFORE}.old`, BEFORE])
+  expect(ran).toContainEqual(['rm', '-rf', `${BEFORE}.pending`])
+})
+
+test('.old だけが残っていたら、消さずに before へ戻してから入れ替える', async ($, on) => {
+  const ran: string[][] = []
+  const toasts: string[] = []
+  await start({ missing: [BEFORE], extra: [`${BEFORE}.old`], toasts })($, on, ran)
+
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+
+  const restore = ran.findIndex(argv => argv[0] === 'mv' && argv[1] === `${BEFORE}.old`)
+  expect(restore).toBeGreaterThanOrEqual(0)
+  expect(ran.findIndex(argv => argv[0] === 'rm' && argv[2] === `${BEFORE}.old`)).toBeGreaterThan(restore)
+  expect(toasts).toEqual([])
+})
+
+test('.old を戻せなかったら、入れ替えず .old を消さない', async ($, on) => {
+  const ran: string[][] = []
+  const toasts: string[] = []
+  await start({ missing: [BEFORE], extra: [`${BEFORE}.old`], exit: { 'mv-restore': 1 }, toasts })($, on, ran)
+
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+
+  expect(toasts).toEqual(['snapshot-gallery: 退避の復元に失敗しました: boom'])
+  expect(ran).not.toContainEqual(['mv', `${BEFORE}.pending`, BEFORE])
+  expect(ran).not.toContainEqual(['rm', '-rf', `${BEFORE}.old`])
 })

@@ -249,13 +249,16 @@ export const register: Register = (on, options) => {
     }
     if (isCopied) {
       // before は退避してから入れ替え、失敗したら戻す
-      const hasBefore = await $.fs.exists(beforeDir)
+      let hasBefore = await $.fs.exists(beforeDir)
+      // 前の回が退避のまま止まっていたら、消さずに戻してから進める
+      const hadBackup = !hasBefore && (await $.fs.exists(backup))
+      if (hadBackup) hasBefore = await succeeded($, ['mv', backup, beforeDir], '退避の復元')
       const isKept = hasBefore && (await succeeded($, ['rm', '-rf', backup], '古い退避の削除')) && (await succeeded($, ['mv', beforeDir, backup], '前の画像の退避'))
-      const isSwapped = (!hasBefore || isKept) && (await succeeded($, ['mv', pending, beforeDir], '前の画像の入れ替え'))
+      const isSwapped = (isKept || (!hasBefore && !hadBackup)) && (await succeeded($, ['mv', pending, beforeDir], '前の画像の入れ替え'))
       if (isSwapped) {
         if (isKept) await succeeded($, ['rm', '-rf', backup], '退避の削除')
       } else {
-        if (isKept) await $.process.run(['mv', backup, beforeDir]).catch(() => undefined)
+        if (isKept) await succeeded($, ['mv', backup, beforeDir], '退避の復元')
         await $.process.run(['rm', '-rf', pending]).catch(() => undefined)
       }
     }
