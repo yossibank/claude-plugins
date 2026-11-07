@@ -5,10 +5,47 @@ import type { Activity, Claude, Fill, Limit, Phase, Repo, Upcoming } from '../ty
 
 const NEXT_LINE = /^\s*[-*]\s*次[：:]\s*(.*)$/
 const NEXT_ITEM = /(?:^|\s)\d+[.．]\s+/
-const INK = '#e8e8e8'
-const MUTED = '#8b8f98'
-const LINE = '#3a3d44'
-const AMBER = '#f5a524'
+// pane は Tokyo Night、帯は Tokyo Night Moon の色
+const TN = {
+  fg: '#c0caf5',
+  fgDark: '#a9b1d6',
+  comment: '#565f89',
+  line: '#3b4261',
+  bgHighlight: '#292e42',
+  blue: '#7aa2f7',
+  cyan: '#7dcfff',
+  magenta: '#bb9af7',
+  green: '#9ece6a',
+  orange: '#ff9e64',
+  red: '#f7768e',
+  yellow: '#e0af68',
+  teal: '#73daca',
+}
+const MOON = {
+  fg: '#c8d3f5',
+  comment: '#636da6',
+  blue: '#82aaff',
+  cyan: '#86e1fc',
+  magenta: '#c099ff',
+  green: '#c3e88d',
+  orange: '#ff966c',
+  red: '#ff757f',
+  yellow: '#ffc777',
+  teal: '#4fd6be',
+}
+const HEAT = [TN.teal, TN.yellow, TN.orange, TN.red]
+// Nerd Font のアイコン
+const ICON = {
+  model: '\u{F06A9}',
+  repo: '\uf401',
+  branch: '\ue725',
+  limit: '\u{F029A}',
+  context: '\u{F09D1}',
+  cache: '\u{F01BC}',
+  next: '\uf04e',
+  now: '\u{F140B}',
+}
+const MIN_INNER = 20
 const GRADES = [
   { name: 'S', from: 0.7, color: '#7ee0ff' },
   { name: 'A', from: 0.5, color: '#7fe0a0' },
@@ -16,8 +53,6 @@ const GRADES = [
   { name: 'C', from: 0.15, color: '#f0a050' },
   { name: 'D', from: 0, color: '#f05a5a' },
 ] as const
-const NAME_COLUMNS = 10
-const PROMPT_BAR_MAX = 24
 const NAMES: Record<string, string> = {
   'System prompt': 'システム',
   'System tools': 'ツール',
@@ -44,10 +79,6 @@ const IDLE: Activity = { isWorking: false, task: null, said: null, tool: null, p
 const activity = atom({ plugin: 'session-dash', key: 'activity' } as const, IDLE)
 const second = atom({ plugin: 'session-dash', key: 'second' } as const, 0)
 
-const GREEN = '#7fe0a0'
-const YELLOW = '#e8d27a'
-const RED = '#f05a5a'
-const LABEL = 7
 const GIT_MS = 2000
 const LIMIT_NAMES: Record<string, string> = { five_hour: '5h', seven_day: '7d', spend_limit: '$' }
 // 2 行目に出さない、作業の中身を表さないツール
@@ -95,11 +126,6 @@ const measure = async ($: EngineInterface) => {
     percent: context.percent ?? context.breakdown?.percentage ?? 0,
   }
   await update($, fill, () => measured)
-}
-
-const meter = (ratio: number, columns: number) => {
-  const full = Math.max(0, Math.min(columns, Math.round(ratio * columns)))
-  return { full, empty: columns - full }
 }
 
 // 空きの割合で S〜D を決める
@@ -228,8 +254,6 @@ const untilReset = (resetsAt: string | undefined, now: number) => {
   if (hours >= 24) return `${Math.floor(hours / 24)}d${hours % 24}h`
   return hours > 0 ? `${hours}h${String(minutes % 60).padStart(2, '0')}m` : `${minutes}m`
 }
-
-const limitColor = (percent: number) => (percent >= 90 ? RED : percent >= 70 ? AMBER : GREEN)
 
 const limitsOf = (limits: readonly Limit[]): Limit[] =>
   limits.map(limit => ({ kind: limit.kind, percentUsed: limit.percentUsed, ...(limit.resetsAt === undefined ? {} : { resetsAt: limit.resetsAt }) }))
@@ -398,14 +422,14 @@ const tickWhileRunning = ($: EngineInterface, isRunning: boolean) => {
 
 const phaseLine = (doing: Activity, now: number): { mark: string; text: string; color: string } | null => {
   const phase = doing.phase ?? null
-  if (phase === 'thinking') return { mark: '', text: '考えています…', color: MUTED }
+  if (phase === 'thinking') return { mark: '', text: '考えています…', color: TN.comment }
   if (doing.tool === null) return null
-  if (phase === 'preparing') return { mark: '', text: `${doing.tool} を準備しています…`, color: MUTED }
+  if (phase === 'preparing') return { mark: '', text: `${doing.tool} を準備しています…`, color: TN.comment }
   if (phase === 'running') {
     const seconds = doing.startedAt == null ? 0 : Math.max(0, Math.floor((now - doing.startedAt) / 1000))
-    return { mark: '● ', text: `${doing.tool}  ${seconds}s`, color: INK }
+    return { mark: '● ', text: `${doing.tool} · ${seconds}s`, color: TN.fg }
   }
-  return { mark: '✓ ', text: doing.tool, color: MUTED }
+  return { mark: '✓ ', text: doing.tool, color: TN.comment }
 }
 
 const forget = async ($: EngineInterface) => {
@@ -415,6 +439,97 @@ const forget = async ($: EngineInterface) => {
   tickWhileRunning($, false)
   await update($, activity, () => IDLE)
 }
+
+type Seg = { text: string; color?: string; bold?: boolean }
+
+const segWidth = (segs: readonly Seg[]) => segs.reduce((sum, seg) => sum + cellWidth(seg.text), 0)
+
+// 幅に収まらなければ、はみ出す所から … にする
+const fitSegs = (segs: readonly Seg[], width: number): Seg[] => {
+  if (segWidth(segs) <= width) return [...segs]
+  const out: Seg[] = []
+  let used = 0
+  for (const seg of segs) {
+    const cells = cellWidth(seg.text)
+    if (used + cells < width) {
+      out.push(seg)
+      used += cells
+      continue
+    }
+    out.push({ ...seg, text: fit(seg.text, width - used) })
+    break
+  }
+  return out
+}
+
+const padSegs = (segs: readonly Seg[], width: number): Seg[] => {
+  const fitted = fitSegs(segs, width)
+  return [...fitted, { text: ' '.repeat(Math.max(0, width - segWidth(fitted))) }]
+}
+
+type TextElement = ReturnType<EngineInterface['ui']['resolve']>['Text']
+
+const draw = (Text: TextElement, segs: readonly Seg[]) => (
+  <Text>
+    {segs.map(seg => (
+      <Text {...(seg.color === undefined ? {} : { color: seg.color })} {...(seg.bold === true ? { bold: true } : {})}>
+        {seg.text}
+      </Text>
+    ))}
+  </Text>
+)
+
+const rgbOf = (hex: string) => [1, 3, 5].map(at => parseInt(hex.slice(at, at + 2), 16))
+
+// stops の色の間を、t（0〜1）で混ぜる
+const blend = (stops: readonly string[], t: number) => {
+  const at = Math.max(0, Math.min(1, t)) * (stops.length - 1)
+  const from = Math.min(stops.length - 2, Math.floor(at))
+  const [a, b] = [rgbOf(stops[Math.max(0, from)]!), rgbOf(stops[Math.max(0, from) + 1] ?? stops[Math.max(0, from)]!)]
+  return `#${a.map((value, index) => Math.round(value + (b[index]! - value) * (at - from)).toString(16).padStart(2, '0')).join('')}`
+}
+
+const heat = (t: number, palette: { teal: string; yellow: string; orange: string; red: string } = TN) => blend([palette.teal, palette.yellow, palette.orange, palette.red], t)
+
+// 1 マスずつ色が移る棒
+const gradient = (ratio: number, columns: number, stops: readonly string[], track: string, full = '━', empty = '━'): Seg[] => {
+  const filled = Math.max(0, Math.min(columns, Math.round(ratio * columns)))
+  const cells: Seg[] = Array.from({ length: filled }, (_, index) => ({ text: full, color: blend(stops, index / Math.max(1, columns - 1)) }))
+  return filled === columns ? cells : [...cells, { text: empty.repeat(columns - filled), color: track }]
+}
+
+const valueWidth = (inner: number, keyWidth: number) => Math.max(1, inner - keyWidth - 7)
+
+// 題を上の罫線に、note を下の罫線に埋めた 2 列の表
+const card = (title: Seg[], rows: [Seg[], Seg[]][], inner: number, note?: Seg[]): Seg[][] => {
+  const line = TN.line
+  const keyWidth = Math.max(1, ...rows.map(([key]) => segWidth(key)))
+  const value = valueWidth(inner, keyWidth)
+  const head = fitSegs(title, Math.max(1, inner - 5))
+  const out: Seg[][] = [[{ text: '╭─ ', color: line }, ...head, { text: ` ${'─'.repeat(Math.max(0, inner - 5 - segWidth(head)))}╮`, color: line }]]
+  for (const [key, cell] of rows)
+    out.push([{ text: '│ ', color: line }, ...padSegs(key, keyWidth), { text: ' │ ', color: line }, ...padSegs(cell, value), { text: ' │', color: line }])
+  if (note === undefined) out.push([{ text: `╰${'─'.repeat(keyWidth + 2)}┴${'─'.repeat(value + 2)}╯`, color: line }])
+  else {
+    const tail = fitSegs(note, Math.max(1, inner - 5))
+    out.push([{ text: `╰${'─'.repeat(Math.max(0, inner - 5 - segWidth(tail)))} `, color: line }, ...tail, { text: ' ─╯', color: line }])
+  }
+  return out
+}
+
+const changeSegs = (git: Repo, palette: { green: string; red: string; yellow: string; comment: string } = TN): Seg[] => {
+  const parts: Seg[] = [
+    ...(git.added > 0 ? [{ text: `+${git.added}`, color: palette.green }] : []),
+    ...(git.deleted > 0 ? [{ text: `-${git.deleted}`, color: palette.red }] : []),
+    ...(git.untracked > 0 ? [{ text: `?${git.untracked}`, color: palette.yellow }] : []),
+  ]
+  return parts.length === 0 ? [{ text: 'なし', color: palette.comment }] : parts.flatMap((part, index) => (index === 0 ? [part] : [{ text: ' ' }, part]))
+}
+
+const stepSegs = (step: { mark: string; text: string; color: string }): Seg[] => [
+  ...(step.mark === '' ? [] : [{ text: step.mark, color: step.mark === '● ' ? TN.yellow : TN.green }]),
+  { text: step.text, color: step.color },
+]
 
 export const register: Register = (on, options) => {
   const config = configure(options)
@@ -538,10 +653,7 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
-    const inner = Math.max(1, e.props.bodyColumns - 2)
-    const body = inner - LABEL
-    const label = (text: string) => <Text color={MUTED}>{text.padEnd(LABEL)}</Text>
-    const rule = <Text color={LINE}>{'─'.repeat(inner)}</Text>
+    const inner = Math.max(MIN_INNER, e.props.bodyColumns - 2)
     const now = await $.clock.now()
     await read($, tick)
     const info = await read($, claude)
@@ -549,138 +661,102 @@ export const register: Register = (on, options) => {
     const doing = await read($, activity)
     await read($, second)
     const step = phaseLine(doing, now)
-
-    const claudeRow =
-      info === null ? null : (
-        <Text>
-          {label('CLAUDE')}
-          <Text color={INK}>{fit([info.model, info.version === '' ? '' : `v${info.version}`, info.usd === null ? '' : `$${info.usd.toFixed(2)}`].filter(part => part !== '').join(' · '), body)}</Text>
-        </Text>
-      )
-    const changes = git === null ? '' : [git.added > 0 ? `+${git.added}` : '', git.deleted > 0 ? `-${git.deleted}` : '', git.untracked > 0 ? `?${git.untracked}` : ''].filter(part => part !== '').join(' ')
-    const place = git === null ? '' : fit(`${git.name}${git.branch === '' ? '' : `  ⚡${git.branch}`}`, Math.max(4, body - (changes === '' ? 0 : cellWidth(changes) + 2)))
-    const repoRow =
-      git === null ? null : (
-        <Text>
-          {label('REPO')}
-          <Text color={INK}>{place}</Text>
-          {changes === '' ? null : <Text>  </Text>}
-          {git.added > 0 ? <Text color={GREEN}>{`+${git.added}`}</Text> : null}
-          {git.added > 0 && git.deleted + git.untracked > 0 ? <Text> </Text> : null}
-          {git.deleted > 0 ? <Text color={RED}>{`-${git.deleted}`}</Text> : null}
-          {git.deleted > 0 && git.untracked > 0 ? <Text> </Text> : null}
-          {git.untracked > 0 ? <Text color={YELLOW}>{`?${git.untracked}`}</Text> : null}
-        </Text>
-      )
-    const limitRows = (info?.limits ?? []).map((limit, index) => {
-      const name = LIMIT_NAMES[limit.kind] ?? limit.kind
-      const percent = `${Math.round(limit.percentUsed)}%`
-      const fixed = cellWidth(name) + 1 + 1 + cellWidth(percent)
-      const until = untilReset(limit.resetsAt, now)
-      // 棒が 4 も取れなければ、戻るまでの時間を落とす
-      const reset = until !== '' && body - fixed - cellWidth(until) - 1 >= 4 ? until : ''
-      const bar = meter(limit.percentUsed / 100, Math.max(1, body - fixed - (reset === '' ? 0 : cellWidth(reset) + 1)))
-      return (
-        <Text>
-          {label(index === 0 ? 'LIMIT' : '')}
-          <Text color={INK}>{name} </Text>
-          <Text color={limitColor(limit.percentUsed)}>{'▰'.repeat(bar.full)}</Text>
-          <Text color={LINE}>{'▱'.repeat(bar.empty)}</Text>
-          <Text bold color={INK}> {percent}</Text>
-          {reset === '' ? null : <Text color={MUTED}> {reset}</Text>}
-        </Text>
-      )
-    })
-    const summary = doing.task ?? doing.said
-    const nowRows = [
-      <Text>
-        {label('NOW')}
-        <Text color={doing.isWorking ? INK : MUTED}>{fit(summary ?? '待っています', body)}</Text>
-      </Text>,
-      doing.isWorking && step !== null ? (
-        <Text>
-          {label('')}
-          {step.mark === '' ? null : <Text color={step.mark === '● ' ? AMBER : GREEN}>{step.mark}</Text>}
-          <Text color={step.color}>{fit(step.text, body - cellWidth(step.mark))}</Text>
-        </Text>
-      ) : null,
-      !doing.isWorking && summary !== null ? (
-        <Text>
-          {label('')}
-          <Text color={MUTED}>待っています</Text>
-        </Text>
-      ) : null,
-    ]
-    const head = [claudeRow, repoRow, ...limitRows, info === null && git === null ? null : rule, ...nowRows, rule]
-
     const measured = await read($, fill)
-    if (measured === null || measured.window === 0)
-      return (
-        <Box flexDirection="column" paddingX={1}>
-          {head}
-          <Text dimColor>まだ測っていません。</Text>
-        </Box>
+    const cards: Seg[][] = []
+
+    if (info !== null)
+      cards.push(
+        ...card(
+          [{ text: `${ICON.model} Claude`, color: TN.blue, bold: true }],
+          [
+            [[{ text: 'model', color: TN.comment }], [{ text: info.model, color: TN.fg }]],
+            [[{ text: 'cost', color: TN.comment }], [{ text: info.usd === null ? '—' : `$${info.usd.toFixed(2)}`, color: TN.orange }]],
+          ],
+          inner,
+          info.version === '' ? undefined : [{ text: `v${info.version}`, color: TN.comment }],
+        ),
       )
 
-    const left = await cacheLeft($, config)
+    if (git !== null)
+      cards.push(
+        ...card(
+          [{ text: `${ICON.repo} ${git.name}`, color: TN.cyan, bold: true }],
+          [
+            [[{ text: 'branch', color: TN.comment }], [{ text: git.branch === '' ? '—' : git.branch, color: TN.magenta }]],
+            [[{ text: 'diff', color: TN.comment }], changeSegs(git)],
+          ],
+          inner,
+        ),
+      )
+
+    const limits = info?.limits ?? []
+    if (limits.length > 0) {
+      const value = valueWidth(inner, 2)
+      const resets = limits.map(limit => untilReset(limit.resetsAt, now))
+      // 棒の長さをそろえるため、戻るまでの時間は一番長いものの幅で取る
+      const resetWidth = Math.max(0, ...resets.map(until => cellWidth(until)))
+      const isResetShown = resetWidth > 0 && value - 5 - resetWidth - 1 >= 4
+      cards.push(
+        ...card(
+          [{ text: `${ICON.limit} Limit`, color: TN.yellow, bold: true }],
+          limits.map((limit, index) => {
+            const percent = `${Math.round(limit.percentUsed)}%`.padStart(4)
+            // 棒が 4 も取れなければ、戻るまでの時間を落とす
+            const reset = isResetShown ? ` ${' '.repeat(resetWidth - cellWidth(resets[index] ?? ''))}${resets[index] ?? ''}` : ''
+            const columns = Math.max(1, value - 5 - (isResetShown ? resetWidth + 1 : 0))
+            return [
+              [{ text: LIMIT_NAMES[limit.kind] ?? limit.kind, color: TN.fg }],
+              [...gradient(limit.percentUsed / 100, columns, HEAT, TN.line), { text: ` ${percent}`, color: heat(limit.percentUsed / 100), bold: true }, { text: reset, color: TN.comment }],
+            ]
+          }),
+          inner,
+        ),
+      )
+    }
+
+    if (measured === null || measured.window === 0)
+      cards.push(...card([{ text: `${ICON.context} Context`, color: TN.magenta, bold: true }], [[[], [{ text: 'まだ測っていません。', color: TN.comment }]]], inner))
+    else {
+      const left = await cacheLeft($, config)
+      const grade = gradeOf(measured)
+      const legend = [...measured.slices].sort((x, y) => y.tokens - x.tokens)
+      const keyWidth = Math.max(4, ...legend.map(slice => cellWidth(slice.name)))
+      const value = valueWidth(inner, keyWidth)
+      const top = Math.max(...legend.map(slice => slice.tokens), 1)
+      const total = `${thousands(measured.tokens)}/${thousands(measured.window)}`
+      cards.push(
+        ...card(
+          [{ text: `${ICON.context} Context ${measured.percent}%`, color: TN.magenta, bold: true }],
+          [
+            [[{ text: 'used', color: TN.comment }], [...gradient(measured.percent / 100, Math.max(1, value - cellWidth(total) - 1), [TN.blue, TN.magenta], TN.line), { text: ` ${total}`, color: TN.fg }]],
+            ...legend.map((slice): [Seg[], Seg[]] => [
+              [{ text: slice.name, color: TN.fgDark }],
+              [{ text: kilo(slice.tokens).padStart(6), color: TN.fg }, { text: ' ' }, ...gradient(slice.tokens / top, Math.max(1, value - 7), [TN.magenta, TN.magenta], TN.bgHighlight, '━', ' ')],
+            ]),
+          ],
+          inner,
+          [
+            { text: 'grade ', color: TN.comment },
+            { text: grade.name, color: grade.color, bold: true },
+            { text: ` · ${ICON.cache} ${left === null ? 'cold' : `${left}m`}`, color: TN.comment },
+          ],
+        ),
+      )
+    }
+
     const next = await nextOf($, config)
-    const grade = gradeOf(measured)
-    const legend = [...measured.slices].sort((a, b) => b.tokens - a.tokens)
-    const nameColumns = Math.max(NAME_COLUMNS, ...legend.map(slice => cellWidth(slice.name)))
-    const percent = `${measured.percent}%`
-    const clock = left === null ? 'cold' : `${left}m`
-    const top = Math.max(...legend.map(slice => slice.tokens), 1)
-    const usedBar = meter(measured.percent / 100, Math.max(4, inner - cellWidth(percent) - 2))
-    const legendBar = Math.max(4, inner - (2 + nameColumns + 7 + 6 + 2))
-    const cacheBar = meter(left === null ? 0 : (left * 60_000) / config.cacheMs, Math.max(4, inner - 7 - cellWidth(clock) - 2))
-    const pad = (text: string, width: number) => text + ' '.repeat(Math.max(0, width - cellWidth(text)))
+    if (next.length > 0)
+      cards.push(...card([{ text: `${ICON.next} Next`, color: TN.blue, bold: true }], next.map((item, index): [Seg[], Seg[]] => [[{ text: `${index + 1}`, color: TN.comment }], [{ text: item, color: TN.fg }]]), inner))
+
+    const summary = doing.task ?? doing.said
+    const nowRows: [Seg[], Seg[]][] = [[[{ text: '作業', color: TN.comment }], [{ text: summary ?? '待っています', color: doing.isWorking ? TN.fg : TN.comment }]]]
+    if (doing.isWorking && step !== null) nowRows.push([[{ text: '実行', color: TN.comment }], stepSegs(step)])
+    else if (!doing.isWorking && summary !== null) nowRows.push([[{ text: '状態', color: TN.comment }], [{ text: '待っています', color: TN.comment }]])
+    cards.push(...card([{ text: `${ICON.now} Now`, color: TN.yellow, bold: true }], nowRows, inner))
 
     return (
       <Box flexDirection="column" paddingX={1}>
-        {head}
-        <Text>
-          <Text color={MUTED}>CONTEXT</Text>
-          <Text>{' '.repeat(Math.max(1, inner - 7 - 7))}</Text>
-          <Text color={MUTED}>GRADE </Text>
-          <Text bold color={grade.color}>{grade.name}</Text>
-        </Text>
-        <Text>
-          <Text bold color={INK}>{percent}</Text>
-          <Text>  </Text>
-          <Text color={AMBER}>{'▰'.repeat(usedBar.full)}</Text>
-          <Text color={LINE}>{'▱'.repeat(usedBar.empty)}</Text>
-        </Text>
-        <Text color={MUTED}>
-          {kilo(measured.tokens)} used · {kilo(measured.free)} free · {thousands(measured.window)}
-        </Text>
-        {rule}
-        {legend.map(slice => {
-          const bar = meter(slice.tokens / top, legendBar)
-          return (
-            <Text>
-              <Text color={slice.color}>●</Text>
-              <Text color={INK}> {pad(slice.name, nameColumns)}{kilo(slice.tokens).padStart(7)}</Text>
-              <Text color={MUTED}>{`${((slice.tokens / measured.window) * 100).toFixed(1)}%`.padStart(6)}</Text>
-              <Text>  </Text>
-              <Text color={slice.color}>{'━'.repeat(bar.full)}</Text>
-              <Text color={LINE}>{'─'.repeat(bar.empty)}</Text>
-            </Text>
-          )
-        })}
-        {rule}
-        <Text>
-          <Text color={MUTED}>CACHE  </Text>
-          <Text bold color={INK}>{clock}</Text>
-          <Text>  </Text>
-          <Text color={AMBER}>{'━'.repeat(cacheBar.full)}</Text>
-          <Text color={LINE}>{'─'.repeat(cacheBar.empty)}</Text>
-        </Text>
-        {next.map((item, index) => (
-          <Text>
-            <Text color={MUTED}>{index === 0 ? 'NEXT   ' : '       '}</Text>
-            <Text color={INK}>{item}</Text>
-          </Text>
-        ))}
+        {cards.map(line => draw(Text, line))}
       </Box>
     )
   })
@@ -706,71 +782,46 @@ export const register: Register = (on, options) => {
     const { Box, Text } = $.ui.resolve(e)
     const beneath = await next(e)
     await read($, tick)
-    const left = await cacheLeft($, config)
-    const grade = gradeOf(measured)
-    const percent = `${measured.percent}%`
-    const used = `${thousands(measured.tokens)} / ${thousands(measured.window)}`
-    const clock = `⏱ ${left === null ? 'cold' : `${left}m`}`
-    const fixed = 2 + 1 + 2 + cellWidth(percent) + 2 + 2 + cellWidth(used) + 2 + 1 + 2 + cellWidth(clock) + SLACK_COLUMNS
-    const bar = meter(measured.percent / 100, Math.max(4, Math.min(PROMPT_BAR_MAX, e.props.bodyColumns - fixed)))
-
-    const doing = await read($, activity)
     await read($, second)
-    const step = phaseLine(doing, await $.clock.now())
+    const now = await $.clock.now()
+    const left = await cacheLeft($, config)
+    const doing = await read($, activity)
+    const step = phaseLine(doing, now)
     const summary = doing.task ?? doing.said
-    const width = Math.max(4, e.props.bodyColumns - SLACK_COLUMNS - 2)
     const info = await read($, claude)
     const git = await read($, repo)
-    const dot = <Text color={MUTED}> · </Text>
-    const limits = (info?.limits ?? []).map(limit => ({ name: LIMIT_NAMES[limit.kind] ?? limit.kind, percent: Math.round(limit.percentUsed), color: limitColor(limit.percentUsed) }))
-    const changes = git === null ? [] : [{ text: git.added > 0 ? `+${git.added}` : '', color: GREEN }, { text: git.deleted > 0 ? `-${git.deleted}` : '', color: RED }, { text: git.untracked > 0 ? `?${git.untracked}` : '', color: YELLOW }].filter(part => part.text !== '')
-    const model = info?.model ?? ''
-    const limitText = limits.map(limit => ` · ${limit.name} ${limit.percent}%`).join('')
-    const changeText = changes.map(part => ` ${part.text}`).join('')
-    const room = e.props.bodyColumns - SLACK_COLUMNS - cellWidth(model) - cellWidth(limitText) - cellWidth(changeText) - (model === '' ? 0 : 3) - cellWidth('⚡')
-    const branch = git === null || git.branch === '' ? '' : fit(git.branch, Math.max(4, room))
+    const width = Math.max(MIN_INNER, e.props.bodyColumns - SLACK_COLUMNS)
+
+    const working: Seg[] = []
+    if (doing.isWorking && (summary !== null || step !== null)) {
+      working.push({ text: '● ', color: MOON.yellow })
+      if (summary !== null) working.push({ text: summary, color: MOON.fg })
+      if (summary !== null && step !== null) working.push({ text: ' │ ', color: MOON.comment })
+      if (step !== null) working.push({ text: step.mark === '' ? '' : step.mark, color: step.mark === '● ' ? MOON.yellow : MOON.green }, { text: step.text, color: MOON.comment })
+    }
+
+    // 区切りの │ で並べるセル。枝は、幅に収まるように最後に縮める
+    const cells: Seg[][] = []
+    if (info !== null && info.model !== '') cells.push([{ text: info.model, color: MOON.blue }])
+    const branchAt = cells.length
+    if (git !== null && git.branch !== '') cells.push([{ text: `${ICON.branch} ${git.branch}`, color: MOON.magenta }])
+    if (git !== null && git.added + git.deleted + git.untracked > 0) cells.push(changeSegs(git, MOON))
+    cells.push([{ text: 'ctx ', color: MOON.fg }, { text: `${measured.percent}%`, color: MOON.cyan }])
+    for (const limit of info?.limits ?? [])
+      cells.push([{ text: `${LIMIT_NAMES[limit.kind] ?? limit.kind} `, color: MOON.fg }, { text: `${Math.round(limit.percentUsed)}%`, color: heat(limit.percentUsed / 100, MOON) }])
+    cells.push([{ text: `${ICON.cache} ${left === null ? 'cold' : `${left}m`}`, color: MOON.comment }])
+    const bar = { text: '│', color: MOON.magenta }
+    const lineOf = (row: Seg[][]) => [bar, ...row.flatMap(cell => [{ text: ' ' }, ...cell, { text: ' ' }, bar])]
+    const over = segWidth(lineOf(cells)) - width
+    if (over > 0 && git !== null && git.branch !== '' && cells[branchAt] !== undefined) {
+      const room = Math.max(4, segWidth(cells[branchAt]!) - over)
+      cells[branchAt] = fitSegs(cells[branchAt]!, room)
+    }
 
     return (
       <Box flexDirection="column">
-        {doing.isWorking && summary !== null ? (
-          <Text>
-            <Text color={AMBER}>▸ </Text>
-            <Text color={INK}>{fit(summary, width)}</Text>
-          </Text>
-        ) : null}
-        {doing.isWorking && step !== null ? (
-          <Text>
-            <Text>  </Text>
-            {step.mark === '' ? null : <Text color={step.mark === '● ' ? AMBER : GREEN}>{step.mark}</Text>}
-            <Text color={step.color}>{fit(step.text, width - cellWidth(step.mark))}</Text>
-          </Text>
-        ) : null}
-        <Text>
-          <Text bold color={grade.color}>◆ {grade.name}</Text>
-          <Text>  </Text>
-          <Text bold color={INK}>{percent}</Text>
-          <Text>  </Text>
-          <Text color={AMBER}>{'▰'.repeat(bar.full)}</Text>
-          <Text color={LINE}>{'▱'.repeat(bar.empty)}</Text>
-          <Text color={MUTED}>  {used}  ·  {clock}</Text>
-        </Text>
-        {model === '' && branch === '' && limits.length === 0 ? null : (
-          <Text>
-            {model === '' ? null : <Text color={INK}>{model}</Text>}
-            {model !== '' && branch !== '' ? dot : null}
-            {branch === '' ? null : <Text color={MUTED}>{`⚡${branch}`}</Text>}
-            {changes.map(part => (
-              <Text color={part.color}>{` ${part.text}`}</Text>
-            ))}
-            {limits.map((limit, index) => (
-              <Text>
-                {index === 0 && model === '' && branch === '' ? null : dot}
-                <Text color={MUTED}>{`${limit.name} `}</Text>
-                <Text color={limit.color}>{`${limit.percent}%`}</Text>
-              </Text>
-            ))}
-          </Text>
-        )}
+        {working.length === 0 ? null : draw(Text, fitSegs(working, width))}
+        {draw(Text, fitSegs(lineOf(cells), width))}
         {beneath}
       </Box>
     )

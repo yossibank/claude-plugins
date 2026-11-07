@@ -10,7 +10,7 @@
 | --- | --- |
 | [pr-browser](plugins/pr-browser) | `gh pr create` で作った PR のページを、[terminal-browser](https://github.com/zenbu-labs/terminal-browser) で右に開く。会話が 128 列より狭い時は下に開く |
 | [snapshot-gallery](plugins/snapshot-gallery) | `make snapshot` で描いた PNG を、直す前と後で左右に並べて pane に出す。`/snapshots <セット>` で開き、`j` と `k` で前と次に移る |
-| [session-dash](plugins/session-dash) | モデル・版・費用、リポジトリ・ブランチ・差分、利用の上限、今の作業を 2 行、文脈の埋まり具合を右の pane に出す。文脈は種類ごとに色分けした棒と S〜D の評価で出す。pane を閉じている間は入力欄の上に、文脈の 1 行と、モデル・ブランチ・差分・上限の 1 行を出し、作業中は今の作業の 2 行も足す。キャッシュが切れるまでの時間も出す |
+| [session-dash](plugins/session-dash) | モデル・版・費用、リポジトリ・ブランチ・差分、利用の上限、文脈の埋まり具合、handoff の次、今の作業を、Tokyo Night の色で、題を罫線に埋めた表にして右の pane に出す。文脈は種類ごとの棒と S〜D の評価で出す。pane を閉じている間は入力欄の上に、`│` で区切った 1 行を出し、作業中は今の作業の 1 行も足す。キャッシュが切れるまでの時間も出す。アイコンに Nerd Font を使う |
 | [test-progress](plugins/test-progress) | テストのコマンドの間、進みの棒と落ちたテストを入力欄の上に出し、終わったらトーストで知らせる。コマンドの出力を `.build/test.log` に残しておく |
 
 ## 🚀 入れ方

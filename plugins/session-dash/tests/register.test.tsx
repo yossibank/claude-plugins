@@ -104,209 +104,158 @@ const PANE = {
 
 const cells = (line: string) => [...line].reduce((sum, char) => sum + (/[ᄀ-ᅟ⺀-꓏가-힣＀-｠]|\p{Extended_Pictographic}/u.test(char) ? 2 : 1), 0)
 
-test('入力欄の上は 1 行で、評価・割合・棒・使用量・キャッシュの残りを出す', async ($, on) => {
+type Engine = Parameters<TestBody>[0]
+
+const lines = async ($: Engine, columns = 46) => {
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: columns } })
+  const found = (await ui.findAll({ type: 'Text' })).map(element => element.text).filter(text => /^[╭│╰].*[╮│╯]$/u.test(text))
+  await ui.unmount()
+  return [...new Set(found)]
+}
+
+const bandLines = async ($: Engine, columns = 100) => {
+  const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: columns } })
+  const found = (await ui.findAll({ type: 'Text' })).map(element => element.text).filter(text => /^(● .*|│ .* │)$/u.test(text))
+  await ui.unmount()
+  return [...new Set(found)]
+}
+
+const working = async ($: Engine) => {
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await $.tool.call({ tool: 'TaskCreate', subject: '画面を直す', description: 'd', activeForm: '画面を直しています' } as never)
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'in_progress' } as never)
+}
+
+const done = (turnId = 't1', agentId?: string) => ({ answer: '', durationMs: 1, isAborted: false, turnId, reason: 'end_turn', ...(agentId === undefined ? {} : { agentId }) }) as never
+
+const holding = () => {
+  let release = () => {}
+  const hold = new Promise<never>(resolve => {
+    release = () => resolve({ result: { stdout: 'ok', stderr: '' }, text: 'ok' } as never)
+  })
+  return { hold, release: () => release() }
+}
+
+test('pane: どの行も幅いっぱいで、はみ出さない', async ($, on) => {
+  engine(on, 41, 200000, false, { [HANDOFF]: { text: '- 次：1. 画面を直す', mtimeMs: T0 } })
+  await start($)
+  await working($)
+  await $.tool.call({ tool: 'Bash', command: 'x', description: 'とても長い説明がずっと続いていて pane の幅には収まらない' } as never)
+
+  for (const columns of [46, 30, 22]) {
+    const found = await lines($, columns)
+    expect(found.length).toBeGreaterThan(20)
+    for (const line of found) expect(cells(line)).toBe(Math.max(20, columns - 2))
+  }
+})
+
+test('pane: Claude の表に、モデルと費用を出し、版を下の罫線に埋める', async ($, on) => {
   engine(on, 41)
   await start($)
-  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'end_turn' } as never)
 
-  const ui = await $.ui.mount(BAND)
-  expect(await ui.find({ type: 'Text', text: /^◆ A {2}41% {2}▰+▱+ {2}82k \/ 200k {2}· {2}⏱ 60m$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /会話|システム|📌/ })).toBeUndefined()
+  const found = await lines($)
+  expect(found.some(line => /^╭─ . Claude ─+╮$/u.test(line))).toBe(true)
+  expect(found.some(line => /^│ model │ Opus 5\.5 +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /^│ cost {2}│ \$1\.24 +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /^╰─+ v2\.1\.319 ─╯$/u.test(line))).toBe(true)
+})
+
+test('pane: リポジトリの表の題に名前を、行にブランチと色の付いた差分を出す', async ($, on) => {
+  engine(on, 41)
+  await start($)
+
+  const found = await lines($)
+  expect(found.some(line => /^╭─ . owner\/app ─+╮$/u.test(line))).toBe(true)
+  expect(found.some(line => /^│ branch │ feat\/dash +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /^│ diff {3}│ \+12 -3 \?1 +│$/u.test(line))).toBe(true)
+  const ui = await $.ui.mount(PANE)
+  expect((await ui.find({ type: 'Text', text: /^\+12$/ }))?.props?.color).toBe('#9ece6a')
   await ui.unmount()
 })
 
-test('入力欄の上: キャッシュが切れたら ⏱ cold', async ($, on) => {
-  const { clock } = engine(on, 41)
-  await start($)
-  await clock.advance(60 * MINUTE)
-
-  const ui = await $.ui.mount(BAND)
-  expect(await ui.find({ type: 'Text', text: /82k \/ 200k {2}· {2}⏱ cold$/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('入力欄の上: handoff の次は出さない', async ($, on) => {
-  engine(on, 41, 200000, false, { [HANDOFF]: { text: '- 次：1. a', mtimeMs: T0 } })
+test('pane: 上限は窓ごとに 1 行で、棒の長さをそろえ、割合と戻るまでの時間を出す', async ($, on) => {
+  engine(on, 41)
   await start($)
 
-  const ui = await $.ui.mount(BAND)
-  expect(await ui.find({ type: 'Text', text: /NEXT/ })).toBeUndefined()
-  await ui.unmount()
+  const found = await lines($)
+  const five = found.find(line => /^│ 5h │ ━+ {2}62% 2h10m │$/u.test(line)) ?? ''
+  const seven = found.find(line => /^│ 7d │ ━+ {2}43% {2}3d5h │$/u.test(line)) ?? ''
+  expect(five.length).toBeGreaterThan(0)
+  expect(five.match(/━/g)?.length).toBe(seven.match(/━/g)?.length)
 })
 
-test('入力欄の上: 棒は最大 24 で、狭ければ縮む', async ($, on) => {
-  engine(on, 50)
+test('pane: 狭ければ、上限の戻るまでの時間を落とす', async ($, on) => {
+  engine(on, 41)
   await start($)
 
-  const wide = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 120 } })
-  expect(await wide.find({ type: 'Text', text: /^◆ A.*[▰▱]{24} {2}100k/ })).toBeDefined()
-  await wide.unmount()
-  const narrow = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 50 } })
-  const line = (await narrow.find({ type: 'Text', text: /^◆ A/ }))?.text ?? ''
-  expect(cells(line)).toBeLessThanOrEqual(50)
-  expect(line).toMatch(/[▰▱]{4,23} {2}100k/)
-  await narrow.unmount()
+  expect((await lines($, 22)).some(line => /^│ 5h │ ━+ {2}62% │$/u.test(line))).toBe(true)
 })
 
-const gradeCases: [number, string][] = [
-  [140000, 'S'],
-  [139999, 'A'],
-  [100000, 'A'],
-  [99999, 'B'],
-  [60000, 'B'],
-  [59999, 'C'],
-  [30000, 'C'],
-  [29999, 'D'],
+test('session.measure で上限と費用を書き換える', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.session.measure({ context: { window: 200000 }, rateLimits: [{ kind: 'five_hour', percentUsed: 91 }], cost: { usd: 3 }, changed: ['rateLimits', 'cost'] } as never)
+
+  const found = await lines($)
+  expect(found.some(line => /^│ cost {2}│ \$3\.00 +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /91%/.test(line))).toBe(true)
+  expect(found.some(line => /7d/.test(line))).toBe(false)
+})
+
+test('pane: 文脈の表の題に割合を、行に使った量と種類を多い順に出す', async ($, on) => {
+  engine(on, 41)
+  await start($)
+
+  const found = await lines($)
+  expect(found.some(line => /^╭─ . Context 41% ─+╮$/u.test(line))).toBe(true)
+  expect(found.some(line => /^│ used {5}│ ━+ 82k\/200k │$/u.test(line))).toBe(true)
+  const talk = found.findIndex(line => /^│ 会話 {5}│ {2}64\.0k ━+ *│$/u.test(line))
+  const system = found.findIndex(line => /^│ システム │ {2}18\.0k ━+ *│$/u.test(line))
+  expect(talk).toBeGreaterThan(0)
+  expect(system).toBeGreaterThan(talk)
+})
+
+const gradeCases: [number, string, string][] = [
+  [140000, 'S', '#7ee0ff'],
+  [139999, 'A', '#7fe0a0'],
+  [100000, 'A', '#7fe0a0'],
+  [99999, 'B', '#e8d27a'],
+  [60000, 'B', '#e8d27a'],
+  [59999, 'C', '#f0a050'],
+  [30000, 'C', '#f0a050'],
+  [29999, 'D', '#f05a5a'],
 ]
-for (const [free, name] of gradeCases) {
+for (const [free, name, color] of gradeCases) {
   test(`評価: 空き ${free} / 200000 は ${name}`, async ($, on) => {
     engine(on, 41, 200000, false, {}, { isUsageBroken: false, free })
     await start($)
 
-    const ui = await $.ui.mount(BAND)
-    expect(await ui.find({ type: 'Text', text: new RegExp(`^◆ ${name} `) })).toBeDefined()
+    expect((await lines($)).some(line => new RegExp(`^╰─+ grade ${name} · . 60m ─╯$`, 'u').test(line))).toBe(true)
+    const ui = await $.ui.mount(PANE)
+    expect((await ui.find({ type: 'Text', text: new RegExp(`^${name}$`) }))?.props?.color).toBe(color)
     await ui.unmount()
   })
 }
 
-test('最後のターンの終わりからキャッシュの残りを数える（サブエージェントのターンは数えない）', async ($, on) => {
+test('キャッシュは最後のターンの終わりから数え、サブエージェントのターンは数えない。切れたら cold', async ($, on) => {
   const { clock } = engine(on, 85)
   await start($)
   await clock.advance(30 * MINUTE)
-  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'end_turn' } as never)
+  await $.turn.complete(done('t1'))
   await clock.advance(10 * MINUTE)
-  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't2', agentId: 'a1', reason: 'end_turn' } as never)
+  await $.turn.complete(done('t2', 'a1'))
 
-  const ui = await $.ui.mount(BAND)
-  expect(await ui.find({ type: 'Text', text: /⏱ 50m/ })).toBeDefined()
-  await ui.unmount()
+  expect((await lines($)).some(line => /grade . · . 50m ─╯$/u.test(line))).toBe(true)
+  await clock.advance(50 * MINUTE)
+  expect((await lines($)).some(line => /grade . · . cold ─╯$/u.test(line))).toBe(true)
 })
 
-test('評価の色が付く', async ($, on) => {
-  engine(on, 41, 200000, false, {}, { isUsageBroken: false, free: 20000 })
+test('options: キャッシュの寿命を変える', { options: { cacheMinutes: '5' } }, async ($, on) => {
+  const { clock } = engine(on, 35)
   await start($)
+  await clock.advance(6 * MINUTE)
 
-  const ui = await $.ui.mount(BAND)
-  expect((await ui.find({ type: 'Text', text: /^◆ D$/ }))?.props?.color).toBe('#f05a5a')
-  await ui.unmount()
-})
-
-test('pane: 見出しの右端に評価、割合の棒、使用量を出す', async ($, on) => {
-  engine(on, 41)
-  await start($)
-
-  const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /^CONTEXT +GRADE A$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^41% {2}▰+▱+$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^82\.0k used · 100\.0k free · 200k$/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('pane: 種類ごとの行を多い順に、名前・数・割合・棒で出す', async ($, on) => {
-  engine(on, 41)
-  await start($)
-
-  const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /^● 会話 +64\.0k 32\.0% {2}━+─*$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^● システム +18\.0k {2}9\.0% {2}━+─*$/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('pane: 棒は幅いっぱいで、狭くても収まる', async ($, on) => {
-  engine(on, 41)
-  await start($)
-
-  for (const columns of [40, 34]) {
-    const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: columns } })
-    const used = (await ui.find({ type: 'Text', text: /^41% / }))?.text ?? ''
-    const row = (await ui.find({ type: 'Text', text: /^● 会話/ }))?.text ?? ''
-    expect(cells(used)).toBe(columns - 2)
-    expect(cells(row)).toBeLessThanOrEqual(columns - 2)
-    await ui.unmount()
-  }
-
-  const narrow = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 24 } })
-  const head = (await narrow.find({ type: 'Text', text: /^CONTEXT / }))?.text ?? ''
-  const used = (await narrow.find({ type: 'Text', text: /^41% / }))?.text ?? ''
-  expect(cells(head)).toBe(22)
-  expect(cells(used)).toBe(22)
-  for (const pattern of [/^LIMIT /, /^ {7}7d /, /^REPO /, /^CLAUDE /]) {
-    const line = (await narrow.find({ type: 'Text', text: pattern }))?.text ?? ''
-    expect(line.length).toBeGreaterThan(0)
-    expect(cells(line)).toBeLessThanOrEqual(22)
-  }
-  await narrow.unmount()
-})
-
-test('pane: キャッシュの残りと棒を出す。切れたら cold と空の棒', async ($, on) => {
-  const { clock } = engine(on, 41)
-  await start($)
-  await clock.advance(30 * MINUTE)
-
-  const ui = await $.ui.mount(PANE)
-  const half = (await ui.find({ type: 'Text', text: /^CACHE {2}30m {2}━+─+$/ }))?.text ?? ''
-  expect(half.match(/━/g)?.length).toBe(half.match(/─/g)?.length)
-  await ui.unmount()
-  await clock.advance(30 * MINUTE)
-  const again = await $.ui.mount(PANE)
-  expect(await again.find({ type: 'Text', text: /^CACHE {2}cold {2}─+$/ })).toBeDefined()
-  await again.unmount()
-})
-
-test('次: 同じ行に並ぶ形を読む。2 つ目からは字下げする', async ($, on) => {
-  engine(on, 41, 200000, false, { [HANDOFF]: { text: '# h\n- 次：1. 画面を直す 2. テストを足す\n- 別', mtimeMs: T0 } })
-  await start($)
-
-  const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /^NEXT {3}画面を直す$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^ {7}テストを足す$/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('次: 次の行から字下げして続く形を読む', async ($, on) => {
-  engine(on, 41, 200000, false, { [HANDOFF]: { text: '- 次：\n  1. a\n  2. b\n\n- 別 3. c', mtimeMs: T0 } })
-  await start($)
-
-  const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /^NEXT {3}a$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^ {7}b$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /c$/ })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('次: handoff に無ければ出さない', async ($, on) => {
-  engine(on, 41)
-  await start($)
-
-  const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /NEXT/ })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('次: handoff.md が書き換わったら消える', async ($, on) => {
-  const files: Record<string, File> = { [HANDOFF]: { text: '- 次：1. a', mtimeMs: T0 } }
-  engine(on, 41, 200000, false, files)
-  await start($)
-
-  const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /NEXT/ })).toBeDefined()
-  await ui.unmount()
-  files[HANDOFF] = { text: '- 次：1. b', mtimeMs: T0 + 1 }
-  const again = await $.ui.mount(PANE)
-  expect(await again.find({ type: 'Text', text: /NEXT/ })).toBeUndefined()
-  await again.unmount()
-})
-
-test('次: /clear の後に読み直す', async ($, on) => {
-  const files: Record<string, File> = {}
-  engine(on, 41, 200000, false, files)
-  await start($)
-  files[HANDOFF] = { text: '- 次：1. a', mtimeMs: T0 }
-  await $.classic.SessionStart({ source: 'clear' })
-
-  const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /NEXT {3}a/ })).toBeDefined()
-  await ui.unmount()
+  expect((await lines($)).some(line => /· . cold ─╯$/u.test(line))).toBe(true)
 })
 
 test('usage が失敗したら前の値を残す', async ($, on) => {
@@ -314,33 +263,164 @@ test('usage が失敗したら前の値を残す', async ($, on) => {
   engine(on, 41, 200000, false, {}, state)
   await start($)
   state.isUsageBroken = true
-  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'end_turn' } as never)
+  await $.turn.complete(done())
 
-  const ui = await $.ui.mount(BAND)
-  expect(await ui.find({ type: 'Text', text: /41%/ })).toBeDefined()
-  await ui.unmount()
+  expect((await lines($)).some(line => /Context 41%/.test(line))).toBe(true)
 })
 
-test('options: 寿命を変える', { options: { cacheMinutes: '5' } }, async ($, on) => {
-  const { clock } = engine(on, 35)
+test('次: 同じ行に並ぶ形を読み、番号を付けて出す', async ($, on) => {
+  engine(on, 41, 200000, false, { [HANDOFF]: { text: '# h\n- 次：1. 画面を直す 2. テストを足す\n- 別', mtimeMs: T0 } })
   await start($)
-  await clock.advance(6 * MINUTE)
 
-  const ui = await $.ui.mount(BAND)
-  expect(await ui.find({ type: 'Text', text: /⏱ cold/ })).toBeDefined()
-  await ui.unmount()
+  const found = await lines($)
+  expect(found.some(line => /^╭─ . Next ─+╮$/u.test(line))).toBe(true)
+  expect(found.some(line => /^│ 1 │ 画面を直す +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /^│ 2 │ テストを足す +│$/u.test(line))).toBe(true)
 })
 
-test('上限が 1M でも 1 行目が帯の幅に収まる', async ($, on) => {
-  engine(on, 61, 1_000_000)
+test('次: 次の行から字下げして続く形を読む', async ($, on) => {
+  engine(on, 41, 200000, false, { [HANDOFF]: { text: '- 次：\n  1. a\n  2. b\n\n- 別 3. c', mtimeMs: T0 } })
   await start($)
 
-  const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 60 } })
-  const line = (await ui.find({ type: 'Text', text: /^◆.*610k \/ 1M/ }))?.text ?? ''
-  const total = [...line].reduce((sum, char) => sum + (/[ᄀ-ᅟ⺀-꓏가-힣＀-｠]|\p{Extended_Pictographic}/u.test(char) ? 2 : 1), 0)
-  expect(line.length).toBeGreaterThan(0)
-  expect(total).toBeLessThanOrEqual(60)
-  await ui.unmount()
+  const found = await lines($)
+  expect(found.some(line => /^│ 2 │ b +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /│ c +│$/u.test(line))).toBe(false)
+})
+
+test('次: handoff に無ければ出さず、/clear の後に読み直し、書き換わったら消える', async ($, on) => {
+  const files: Record<string, File> = {}
+  engine(on, 41, 200000, false, files)
+  await start($)
+  expect((await lines($)).some(line => /Next/.test(line))).toBe(false)
+
+  files[HANDOFF] = { text: '- 次：1. a', mtimeMs: T0 }
+  await $.classic.SessionStart({ source: 'clear' })
+  expect((await lines($)).some(line => /^│ 1 │ a +│$/u.test(line))).toBe(true)
+
+  files[HANDOFF] = { text: '- 次：1. b', mtimeMs: T0 + 1 }
+  expect((await lines($)).some(line => /Next/.test(line))).toBe(false)
+})
+
+test('今の作業: 作業中の Task と、終わったツールを ✓ で出し、ターンが終わったら待つ', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await working($)
+  await $.tool.call({ tool: 'Bash', command: 'make verify', description: '確かめる' } as never)
+
+  const found = await lines($)
+  expect(found.some(line => /^╭─ . Now ─+╮$/u.test(line))).toBe(true)
+  expect(found.some(line => /^│ 作業 │ 画面を直しています +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /^│ 実行 │ ✓ Bash: 確かめる +│$/u.test(line))).toBe(true)
+
+  await $.turn.complete(done())
+  const idle = await lines($)
+  expect(idle.some(line => /^│ 状態 │ 待っています +│$/u.test(line))).toBe(true)
+  expect(idle.some(line => /Bash/.test(line))).toBe(false)
+})
+
+test('今の作業: ツールが動いている間は ● と経った秒数を出す', async ($, on) => {
+  const { hold, release } = holding()
+  const { clock } = engine(on, 41, 200000, false, {}, { isUsageBroken: false, hold })
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  const call = $.tool.call({ tool: 'Bash', command: 'make test', description: 'テストする' } as never)
+  await clock.advance(3000)
+
+  expect((await lines($)).some(line => /^│ 実行 │ ● Bash: テストする · 3s +│$/u.test(line))).toBe(true)
+  release()
+  await call
+  expect((await lines($)).some(line => /^│ 実行 │ ✓ Bash: テストする +│$/u.test(line))).toBe(true)
+})
+
+test('今の作業: 重なった呼び出しの片方が終わったら、残っている方を出す', async ($, on) => {
+  const { hold, release } = holding()
+  engine(on, 41, 200000, false, {}, { isUsageBroken: false, hold })
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  const call = $.tool.call({ tool: 'Bash', command: 'make test', description: 'テストする', tool_use_id: 'b1' } as never)
+  await $.tool.call({ tool: 'Grep', pattern: 'foo', agentId: 'a1', tool_use_id: 'g1' } as never)
+
+  expect((await lines($)).some(line => /^│ 実行 │ ● Bash: テストする · 0s +│$/u.test(line))).toBe(true)
+  release()
+  await call
+})
+
+test('今の作業: サブエージェントの呼び出しには ↳ を付ける', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await $.tool.call({ tool: 'Grep', pattern: 'foo', agentId: 'a1' } as never)
+
+  expect((await lines($)).some(line => /^│ 実行 │ ✓ ↳ Grep: foo +│$/u.test(line))).toBe(true)
+})
+
+test('今の作業: 長い行は … で幅に収める', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await $.tool.call({ tool: 'Bash', command: 'x', description: 'とても長い説明がずっと続いていて pane の幅には収まらない' } as never)
+
+  const line = (await lines($)).find(text => /Bash: /.test(text)) ?? ''
+  expect(line).toMatch(/… *│$/)
+  expect(cells(line)).toBe(44)
+})
+
+test('今の作業: 名前の無い Task は出さない', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '9', status: 'in_progress' } as never)
+
+  expect((await lines($)).some(line => /^│ 作業 │ 待っています +│$/u.test(line))).toBe(true)
+})
+
+test('/clear と session.start のやり直しの後は、今の作業を忘れる', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await working($)
+  await $.classic.SessionStart({ source: 'clear' })
+  expect((await lines($)).some(line => /画面を直しています/.test(line))).toBe(false)
+
+  await working($)
+  await start($)
+  expect((await lines($)).some(line => /画面を直しています/.test(line))).toBe(false)
+})
+
+test('測る前は、文脈の表に「まだ測っていません」と出す', async ($, on) => {
+  engine(on, 41, 0)
+  await start($)
+
+  expect((await lines($)).some(line => /まだ測っていません。/.test(line))).toBe(true)
+})
+
+test('入力欄の上: 待っている間は、│ で区切った 1 行だけを出す', async ($, on) => {
+  engine(on, 41)
+  await start($)
+
+  const found = await bandLines($)
+  expect(found).toHaveLength(1)
+  expect(found[0]).toMatch(/^│ Opus 5\.5 │ . feat\/dash │ \+12 -3 \?1 │ ctx 41% │ 5h 62% │ 7d 43% │ . 60m │$/u)
+})
+
+test('入力欄の上: 作業中は、今の作業の行を上に足す', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await working($)
+  await $.tool.call({ tool: 'Edit', file_path: '/repo/a.ts' } as never)
+
+  const found = await bandLines($)
+  expect(found[0]).toBe('● 画面を直しています │ ✓ Edit: a.ts')
+  await $.turn.complete(done())
+  expect(await bandLines($)).toHaveLength(1)
+})
+
+test('入力欄の上: 狭ければブランチを … で縮めて幅に収める', async ($, on) => {
+  engine(on, 41)
+  await start($)
+
+  const line = (await bandLines($, 72))[0] ?? ''
+  expect(line).toMatch(/│ . feat… │ \+12/u)
+  expect(cells(line)).toBe(70)
 })
 
 test('session.start を繰り返しても見張りのタイマーは重ならない', async ($, on) => {
@@ -361,202 +441,7 @@ test('右の pane が見えている間は、入力欄の上に帯を出さな�
   await $.command.run({ command: 'session-dash', args: '' } as never)
 
   const ui = await $.ui.mount(BAND)
-  expect(await ui.find({ type: 'Text', text: /41%/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /ctx/ })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /engine/ })).toBeDefined()
   await ui.unmount()
-})
-
-test('pane: モデル・版・費用、リポジトリ・ブランチ・差分を出す', async ($, on) => {
-  engine(on, 41)
-  await start($)
-
-  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 50 } })
-  expect(await ui.find({ type: 'Text', text: /^CLAUDE Opus 5\.5 · v2\.1\.319 · \$1\.24$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^REPO {3}owner\/app {2}⚡feat\/dash {2}\+12 -3 \?1$/ })).toBeDefined()
-  expect((await ui.find({ type: 'Text', text: /^\+12$/ }))?.props?.color).toBe('#7fe0a0')
-  await ui.unmount()
-})
-
-test('pane: 上限は窓ごとに 1 行で、割合・棒・戻るまでの時間を出し、幅に収める', async ($, on) => {
-  engine(on, 41)
-  await start($)
-
-  const ui = await $.ui.mount(PANE)
-  const five = (await ui.find({ type: 'Text', text: /^LIMIT {2}5h ▰+▱+ 62% 2h10m$/ }))?.text ?? ''
-  expect(cells(five)).toBe(38)
-  expect(await ui.find({ type: 'Text', text: /^ {7}7d ▰+▱+ 43% 3d5h$/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('session.measure で上限と費用を書き換える', async ($, on) => {
-  engine(on, 41)
-  await start($)
-  await $.session.measure({ context: { window: 200000 }, rateLimits: [{ kind: 'five_hour', percentUsed: 91 }], cost: { usd: 3 }, changed: ['rateLimits', 'cost'] } as never)
-
-  const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /^CLAUDE .*\$3\.00$/ })).toBeDefined()
-  expect((await ui.find({ type: 'Text', text: /^▰+$/ }))?.props?.color).toBe('#f05a5a')
-  expect(await ui.find({ type: 'Text', text: /7d/ })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('今の作業: 作業中の Task とツールを 2 行で出し、ターンが終わったら待つ', async ($, on) => {
-  engine(on, 41)
-  await start($)
-  await $.turn.start({ turnId: 't1', text: 'go' })
-  await $.tool.call({ tool: 'TaskCreate', subject: '画面を直す', description: 'd', activeForm: '画面を直しています' } as never)
-  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'in_progress' } as never)
-  await $.tool.call({ tool: 'Bash', command: 'make verify', description: '確かめる' } as never)
-
-  const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /^NOW {4}画面を直しています$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^ {7}✓ Bash: 確かめる$/ })).toBeDefined()
-  await ui.unmount()
-
-  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'end_turn' } as never)
-  const idle = await $.ui.mount(PANE)
-  expect(await idle.find({ type: 'Text', text: /^ {7}待っています$/ })).toBeDefined()
-  expect(await idle.find({ type: 'Text', text: /Bash/ })).toBeUndefined()
-  await idle.unmount()
-})
-
-test('今の作業: サブエージェントの呼び出しには ↳ を付ける', async ($, on) => {
-  engine(on, 41)
-  await start($)
-  await $.turn.start({ turnId: 't1', text: 'go' })
-  await $.tool.call({ tool: 'Grep', pattern: 'foo', agentId: 'a1' } as never)
-
-  const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /^ {7}✓ ↳ Grep: foo$/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('今の作業: 長い行は … で幅に収める', async ($, on) => {
-  engine(on, 41)
-  await start($)
-  await $.turn.start({ turnId: 't1', text: 'go' })
-  await $.tool.call({ tool: 'Bash', command: 'x', description: 'とても長い説明がずっと続いていて pane の幅には収まらない' } as never)
-
-  const ui = await $.ui.mount(PANE)
-  const line = (await ui.find({ type: 'Text', text: /Bash: / }))?.text ?? ''
-  expect(line.endsWith('…')).toBe(true)
-  expect(cells(line)).toBeLessThanOrEqual(38)
-  await ui.unmount()
-})
-
-test('入力欄の上: 作業中だけ、今の作業を 2 行足す', async ($, on) => {
-  engine(on, 41)
-  await start($)
-  await $.turn.start({ turnId: 't1', text: 'go' })
-  await $.tool.call({ tool: 'TodoWrite', todos: [{ content: '直す', activeForm: '直しています', status: 'in_progress' }] } as never)
-  await $.tool.call({ tool: 'Edit', file_path: '/repo/a.ts' } as never)
-
-  const ui = await $.ui.mount(BAND)
-  expect(await ui.find({ type: 'Text', text: /^▸ 直しています$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^ {2}✓ Edit: a\.ts$/ })).toBeDefined()
-  await ui.unmount()
-
-  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'end_turn' } as never)
-  const idle = await $.ui.mount(BAND)
-  expect(await idle.find({ type: 'Text', text: /直しています|Edit/ })).toBeUndefined()
-  await idle.unmount()
-})
-
-test('/clear の後は今の作業を忘れる', async ($, on) => {
-  engine(on, 41)
-  await start($)
-  await $.turn.start({ turnId: 't1', text: 'go' })
-  await $.tool.call({ tool: 'TaskCreate', subject: '古い作業', description: 'd' } as never)
-  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'in_progress' } as never)
-  await $.classic.SessionStart({ source: 'clear' })
-
-  const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /古い作業/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /^NOW {4}待っています$/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('入力欄の上: モデル・ブランチ・差分・上限の 1 行を足す', async ($, on) => {
-  engine(on, 41)
-  await start($)
-
-  const ui = await $.ui.mount(BAND)
-  expect(await ui.find({ type: 'Text', text: /^Opus 5\.5 · ⚡feat\/dash \+12 -3 \?1 · 5h 62% · 7d 43%$/ })).toBeDefined()
-  expect((await ui.find({ type: 'Text', text: /^62%$/ }))?.props?.color).toBe('#7fe0a0')
-  await ui.unmount()
-})
-
-test('入力欄の上: 狭ければブランチを … で縮めて幅に収める', async ($, on) => {
-  engine(on, 41)
-  await start($)
-
-  const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 48 } })
-  const line = (await ui.find({ type: 'Text', text: /^Opus 5\.5 · ⚡/ }))?.text ?? ''
-  expect(line).toMatch(/⚡fe.*… \+12/)
-  expect(cells(line)).toBeLessThanOrEqual(46)
-  await ui.unmount()
-})
-
-test('今の作業: 名前の無い Task は出さず、直前の行を残す', async ($, on) => {
-  engine(on, 41)
-  await start($)
-  await $.turn.start({ turnId: 't1', text: 'go' })
-  await $.tool.call({ tool: 'TaskUpdate', taskId: '9', status: 'in_progress' } as never)
-
-  const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /^NOW {4}待っています$/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('session.start をやり直したら今の作業を忘れる', async ($, on) => {
-  engine(on, 41)
-  await start($)
-  await $.turn.start({ turnId: 't1', text: 'go' })
-  await $.tool.call({ tool: 'TaskCreate', subject: '古い作業', description: 'd' } as never)
-  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'in_progress' } as never)
-  await start($)
-
-  const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /古い作業/ })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('今の作業: ツールが動いている間は ● と経った秒数を出し、終わったら ✓ にする', async ($, on) => {
-  let release = () => {}
-  const hold = new Promise<never>(resolve => {
-    release = () => resolve({ result: { stdout: 'ok', stderr: '' }, text: 'ok' } as never)
-  })
-  const { clock } = engine(on, 41, 200000, false, {}, { isUsageBroken: false, hold })
-  await start($)
-  await $.turn.start({ turnId: 't1', text: 'go' })
-  const call = $.tool.call({ tool: 'Bash', command: 'make test', description: 'テストする' } as never)
-  await clock.advance(3000)
-
-  const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /^ {7}● Bash: テストする {2}3s$/ })).toBeDefined()
-  await ui.unmount()
-
-  release()
-  await call
-  const after = await $.ui.mount(PANE)
-  expect(await after.find({ type: 'Text', text: /^ {7}✓ Bash: テストする$/ })).toBeDefined()
-  await after.unmount()
-})
-
-test('今の作業: 重なった呼び出しの片方が終わったら、残っている方を出す', async ($, on) => {
-  let release = () => {}
-  const hold = new Promise<never>(resolve => {
-    release = () => resolve({ result: { stdout: 'ok', stderr: '' }, text: 'ok' } as never)
-  })
-  engine(on, 41, 200000, false, {}, { isUsageBroken: false, hold })
-  await start($)
-  await $.turn.start({ turnId: 't1', text: 'go' })
-  const call = $.tool.call({ tool: 'Bash', command: 'make test', description: 'テストする', tool_use_id: 'b1' } as never)
-  await $.tool.call({ tool: 'Grep', pattern: 'foo', agentId: 'a1', tool_use_id: 'g1' } as never)
-
-  const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /^ {7}● Bash: テストする {2}0s$/ })).toBeDefined()
-  await ui.unmount()
-  release()
-  await call
 })
