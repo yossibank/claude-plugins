@@ -3,7 +3,7 @@ import type { Register, Timer } from 'claude-code'
 import type { Phase } from '../types'
 
 import { act, clearCalls, currentActivity, currentRunning, currentSecond, endCall, forget, phaseLine, refreshTicker, startCall } from './activity'
-import { currentWorkers, dropFinished, endAgentCall, finishWorker, reconcileWorkers, spawnWorker, startAgentCall } from './agents'
+import { currentWorkers, dropFinished, endAgentCall, finishWorker, reconcileWorkers, restartWorker, spawnWorker, startAgentCall } from './agents'
 import { statusLine, workingLine } from './band'
 import { claudeCard, contextCard, filesCard, limitCard, nextCard, nowCard, repoCard, sessionCard, tasksCard, unmeasuredCard } from './cards'
 import { draw } from './cell'
@@ -68,6 +68,9 @@ export const register: Register = (on, options) => {
     if (e.agentId === undefined) {
       await dropFinished($)
       await act($, { isWorking: true, tool: null, phase: null, startedAt: null })
+    } else {
+      await restartWorker($, e.agentId)
+      await refreshTicker($)
     }
     return started
   })

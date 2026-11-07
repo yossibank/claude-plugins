@@ -24,7 +24,7 @@ type State = {
   isVersionBroken?: boolean
   isPanesBroken?: boolean
   chunks?: readonly Record<string, unknown>[]
-  agents?: { id: string; status: string }[]
+  agents?: { id: string; status: string; type?: string; description?: string }[]
   answer?: string
 }
 
@@ -673,7 +673,7 @@ test('Now: サブエージェントを起こしてから終わるまで、種類
 })
 
 test('Now: 3 本を並べ、最後の 1 本は └ で閉じる。終わったものは次の turn.start で消える', async ($, on) => {
-  engine(on, 41)
+  engine(on, 41, 200000, false, {}, { isUsageBroken: false, agents: [{ id: 'a1', status: 'running' }, { id: 'a2', status: 'running' }] })
   await start($)
   await $.turn.start({ turnId: 't1', text: 'go' })
   for (const title of ['一つ目', '二つ目', '三つ目']) await spawn($, title)
@@ -748,4 +748,36 @@ test('Now: メインで重なって動いているツールも、まとめた 1 
   expect(found.some(line => /└ ● Bash: 二つ目 +1s │$/u.test(line))).toBe(true)
   release()
   await Promise.all([first, second])
+})
+
+test('Now: 済みのサブエージェントが同じ agentId で動き直したら、動いている状態に戻る', async ($, on) => {
+  const { clock } = engine(on, 41, 200000, false, {}, { isUsageBroken: false, agents: [{ id: 'a1', status: 'idle', type: 'explorer', description: '続きを頼む' }] })
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await spawn($, '続きを頼む')
+  await $.turn.complete(done('t2', 'a1'))
+  await $.turn.start({ turnId: 't3', text: 'again', agentId: 'a1' } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/repo/a.py', agentId: 'a1' } as never)
+  await clock.advance(3000)
+
+  const found = await lines($, 60)
+  expect(found.some(line => /└ explorer {2}続きを頼む +3s │$/u.test(line))).toBe(true)
+  expect(found.some(line => /✓ 0s/.test(line))).toBe(false)
+
+  await $.turn.complete(done('t4', 'a1'))
+  await $.turn.complete(done())
+  await $.turn.start({ turnId: 't5', text: 'next' })
+  await $.turn.start({ turnId: 't6', text: 'again', agentId: 'a1' } as never)
+  expect((await lines($, 60)).some(line => /└ explorer {2}続きを頼む/.test(line))).toBe(true)
+})
+
+test('Now: メインのターンが終わった時、一覧に無いサブエージェントは終わったとみなす', async ($, on) => {
+  const { clock } = engine(on, 41)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await spawn($, '止められた')
+  await $.turn.complete(done())
+  await clock.advance(10_000)
+
+  expect((await lines($, 60)).some(line => /└ explorer {2}止められた +✓ 0s │$/u.test(line))).toBe(true)
 })

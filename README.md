@@ -29,6 +29,7 @@
    ```
 
    context-gauge を入れていた時は、`/plugin uninstall context-gauge@yossibank` で外してから session-dashboard を入れる。
+   session-dash を入れていた時は、`/plugin uninstall session-dash@yossibank` で外してから session-dashboard を入れる。
 
 3. pr-browser を使う時は、terminal-browser を入れる。
 

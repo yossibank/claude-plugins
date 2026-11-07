@@ -25,7 +25,23 @@ export async function spawnWorker($: EngineInterface, id: string, type: string, 
 
 export async function startAgentCall($: EngineInterface, agentId: string, call: Running) {
   await update($, workers, list =>
-    upsert(list, agentId, call.startedAt, worker => ({ ...worker, calls: worker.calls + 1, last: call.tool, active: [...worker.active.filter(found => found.id !== call.id), call] })),
+    upsert(list, agentId, call.startedAt, worker => ({ ...worker, status: 'running', endedAt: null, calls: worker.calls + 1, last: call.tool, active: [...worker.active.filter(found => found.id !== call.id), call] })),
+  )
+}
+
+// 済みのサブエージェントが同じ agentId で動き直した時（SendMessage など）に、動いている状態へ戻す。消えていたら一覧から種類と題を取る
+export async function restartWorker($: EngineInterface, agentId: string) {
+  const now = await $.clock.now()
+  const listed = (await $.agent.list().catch(() => [])).find(found => found.id === agentId)
+  await update($, workers, list =>
+    upsert(list, agentId, now, worker => ({
+      ...worker,
+      type: worker.type === '' ? (listed?.type ?? '') : worker.type,
+      title: worker.title === '' ? (listed?.description ?? '') : worker.title,
+      status: 'running',
+      endedAt: null,
+      startedAt: worker.status === 'running' ? worker.startedAt : now,
+    })),
   )
 }
 
@@ -43,7 +59,8 @@ async function settle($: EngineInterface, ids: readonly string[], isForced: bool
     list.map((worker): Worker => {
       if (!ids.includes(worker.id) || worker.status !== 'running') return worker
       const status = listed.find(found => found.id === worker.id)?.status
-      if (!isForced && (status === undefined || !ENDED.has(status))) return worker
+      // 一覧に無いものは、止められて turn.complete が来なかったものとみなす
+      if (!isForced && status !== undefined && !ENDED.has(status)) return worker
       return { ...worker, status: status !== undefined && FAILED.has(status) ? 'failed' : 'done', endedAt: now, active: [] }
     }),
   )
