@@ -1,58 +1,12 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PluginOptions, Register, Timer } from 'claude-code'
 
-import type { Breakpoint, Fill, Upcoming } from '../types'
+import type { Fill, Upcoming } from '../types'
 
-const GH_MERGE = /\bgh\s+pr\s+merge\s+(?:-\S+\s+)*(?:https:\/\/\S+\/pull\/)?(\d+)/
-const PRUNE_MERGED = /prune-merged\.sh\s+\S+\s+\S+\s+(\d+)/
-const HEREDOC = /<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2(?=\n|$)/g
-const SHELLS = new Set(['bash', 'sh', 'zsh'])
-
-type Word = { text: string; isQuoted: boolean }
-
-// heredoc の本文を外し、コマンドごとに語へ分ける。区切りの記号は引用符の外だけで見る
-const commandsOf = (source: string): Word[][] => {
-  const commands: Word[][] = [[]]
-  let word: Word | null = null
-  let quote: string | null = null
-  const endWord = () => {
-    if (word !== null) commands[commands.length - 1].push(word)
-    word = null
-  }
-  for (const char of source.replace(HEREDOC, '')) {
-    if (quote !== null) {
-      if (char === quote) quote = null
-      else word!.text += char
-    } else if (char === "'" || char === '"') {
-      quote = char
-      word ??= { text: '', isQuoted: false }
-      word.isQuoted = true
-    } else if (/[;&|\n]/.test(char)) {
-      endWord()
-      if (commands[commands.length - 1].length > 0) commands.push([])
-    } else if (/\s/.test(char)) endWord()
-    else {
-      word ??= { text: '', isQuoted: false }
-      word.text += char
-    }
-  }
-  endWord()
-  return commands.filter(words => words.length > 0)
-}
-
-// 走らせる形だけを残す。頭の語は引用符でも残し、引数の引用符の中は外す。bash -c の中身は読み直す
-const runnable = (command: string): string =>
-  commandsOf(command)
-    .map(words => {
-      const inner = words.findIndex(one => one.text === '-c')
-      if (SHELLS.has(words[0].text.split('/').pop() ?? '') && inner > 0 && words[inner + 1] !== undefined) return runnable(words[inner + 1].text)
-      return words.filter((one, index) => index === 0 || !one.isQuoted).map(one => one.text).join(' ')
-    })
-    .join('\n')
 const NEXT_LINE = /^\s*[-*]\s*次[：:]\s*(.*)$/
 const NEXT_ITEM = /(?:^|\s)\d+[.．]\s+/
 const NEXT_HEAD = '📌 次  '
-const STEPS = ['⣀', '⣄', '⣤', '⣦', '⣶', '⣷', '⣿']
+const EMPTY = '⣀'
 const FULL = '⣿'
 const DIGITS: Record<string, [string, string, string]> = {
   '0': ['┏━┓', '┃ ┃', '┗━┛'],
@@ -88,7 +42,6 @@ const WATCH_MS = 2000
 
 const fill = atom({ plugin: 'context-gauge', key: 'fill' } as const, null, { shape: 'fill-1' })
 const lastTurnEnd = atom({ plugin: 'context-gauge', key: 'lastTurnEnd' } as const, null)
-const breakpoint = atom({ plugin: 'context-gauge', key: 'breakpoint' } as const, null)
 const sessionStart = atom({ plugin: 'context-gauge', key: 'sessionStart' } as const, null)
 const upcoming = atom({ plugin: 'context-gauge', key: 'upcoming' } as const, null)
 const tick = atom({ plugin: 'context-gauge', key: 'tick' } as const, 0)
@@ -118,7 +71,9 @@ const cellWidth = (text: string) =>
   }, 0)
 
 const measure = async ($: EngineInterface) => {
-  const { context } = await $.session.usage({ breakdown: 'summary' })
+  const usage = await $.session.usage({ breakdown: 'summary' }).catch(() => undefined)
+  if (usage === undefined) return
+  const { context } = usage
   const rows = context.breakdown?.categories ?? []
   const of = (kind: string) => rows.filter(row => row.kind === kind).reduce((sum, row) => sum + row.tokens, 0)
   const measured: Fill = {
@@ -142,14 +97,6 @@ const mix = (from: string, to: string, t: number) =>
     .map(value => value.toString(16).padStart(2, '0'))
     .join('')}`
 
-const braille = (fraction: number, columns: number) => {
-  const exact = Math.max(0, Math.min(1, fraction)) * columns
-  const full = Math.floor(exact)
-  const rest = exact - full
-  const head = full < columns && rest > 0 ? (STEPS[Math.min(STEPS.length - 1, Math.floor(rest * STEPS.length))] ?? '') : ''
-  return { filled: FULL.repeat(full) + head, empty: (STEPS[0] ?? '').repeat(columns - full - (head === '' ? 0 : 1)) }
-}
-
 const widths = (parts: number[], columns: number) => {
   const total = parts.reduce((sum, part) => sum + part, 0)
   if (total === 0) return parts.map(() => 0)
@@ -170,24 +117,20 @@ type Config = {
   cacheMs: number
   yellowAt: number
   redAt: number
-  breakPattern: RegExp
   handoffPath: string
 }
 
+const DEFAULT_YELLOW = 50
+const DEFAULT_RED = 80
+
 const configure = (options: PluginOptions): Config => {
-  const source = String(options.breakPattern ?? 'gh pr merge|prune-merged\\.sh')
-  const pattern = (() => {
-    try {
-      return new RegExp(source)
-    } catch {
-      return new RegExp('gh pr merge|prune-merged\\.sh')
-    }
-  })()
+  const yellow = Number(options.yellowAt ?? DEFAULT_YELLOW)
+  const red = Number(options.redAt ?? DEFAULT_RED)
+  const isValid = Number.isFinite(yellow) && Number.isFinite(red) && red >= yellow
   return {
     cacheMs: Number(options.cacheMinutes ?? '60') * 60_000,
-    yellowAt: Number(options.yellowAt ?? 50),
-    redAt: Number(options.redAt ?? 80),
-    breakPattern: pattern,
+    yellowAt: isValid ? yellow : DEFAULT_YELLOW,
+    redAt: isValid ? red : DEFAULT_RED,
     handoffPath: String(options.handoffPath ?? '.claude/handoff.md'),
   }
 }
@@ -241,7 +184,6 @@ const begin = async ($: EngineInterface, config: Config) => {
   const found = await readUpcoming($, config)
   await update($, sessionStart, () => now)
   await update($, lastTurnEnd, () => null)
-  await update($, breakpoint, () => null)
   await update($, upcoming, () => found)
 }
 
@@ -257,45 +199,20 @@ const watchPane = async ($: EngineInterface) => {
   if (minute !== (await read($, tick))) await update($, tick, () => minute)
 }
 
-type Advice = {
-  isGood: boolean
-  lines: string[]
-  next: string[]
-}
-
-const advise = async ($: EngineInterface, config: Config, measured: Fill): Promise<Advice> => {
+// キャッシュが切れるまでの分数。切れていたら null
+const cacheLeft = async ($: EngineInterface, config: Config): Promise<number | null> => {
   const now = await $.clock.now()
   const start = await read($, sessionStart)
   const lastTurn = await read($, lastTurnEnd)
-  const stop = await read($, breakpoint)
-  const ahead = await read($, upcoming)
-  const percent = measured.percent
   const since = now - (lastTurn ?? start ?? now)
-  const isExpired = since >= config.cacheMs
+  return since >= config.cacheMs ? null : Math.max(1, Math.ceil((config.cacheMs - since) / 60_000))
+}
 
-  const reason =
-    stop !== null
-      ? stop.label
-      : isExpired && percent >= config.yellowAt
-        ? `キャッシュが切れた（${percent}%）`
-        : percent >= config.redAt
-          ? `文脈が ${percent}%`
-          : null
-
+const nextOf = async ($: EngineInterface, config: Config): Promise<string[]> => {
+  const ahead = await read($, upcoming)
+  if (ahead === null) return []
   const stat = await $.fs.stat(await handoffOf($, config)).catch(() => undefined)
-  const next =
-    ahead !== null && stop === null && (stat === undefined || stat.mtimeMs <= ahead.mtimeMs)
-      ? ahead.items.map((item, index) => `${index + 1}. ${item}`)
-      : []
-
-  if (reason === null) return { isGood: false, lines: [], next }
-
-  const cache = isExpired ? '続けても安くならない' : `キャッシュ切れまで ${Math.max(1, Math.ceil((config.cacheMs - since) / 60_000))} 分`
-  const since0 = stop?.at ?? start ?? 0
-  const isOld = stat === undefined || stat.size === 0 || stat.mtimeMs < since0
-  const name = config.handoffPath.split('/').pop()
-  const handoff = isOld ? `${name} が古いので先に ctx-handoff` : `${name} は新しい`
-  return { isGood: true, lines: [`🧹 今が /clear の頃合い  ${reason}`, `   ${cache} · ${handoff}`], next }
+  return stat === undefined || stat.mtimeMs <= ahead.mtimeMs ? ahead.items.map((item, index) => `${index + 1}. ${item}`) : []
 }
 
 const nextRows = (next: string[]) => next.map((item, index) => (index === 0 ? `${NEXT_HEAD}${item}` : `${' '.repeat(cellWidth(NEXT_HEAD))}${item}`))
@@ -331,11 +248,14 @@ export const register: Register = (on, options) => {
     if (measured === null || measured.window === 0) return <Text dimColor>まだ測っていません。</Text>
 
     await read($, tick)
-    const advice = await advise($, config, measured)
+    const left = await cacheLeft($, config)
+    const next = await nextOf($, config)
     const legend = [...measured.slices].sort((a, b) => b.tokens - a.tokens)
-    const nameColumns = Math.max(...legend.map(slice => cellWidth(slice.name)), 4)
-    const barColumns = Math.max(4, e.props.bodyColumns - 2 - nameColumns - 1 - 7)
-    const [from, to] = GRADIENTS[advice.isGood ? 'error' : tone(measured, config)]
+    const nameColumns = Math.max(...legend.map(slice => cellWidth(slice.name)))
+    const tokenColumns = Math.max(...legend.map(slice => thousands(slice.tokens).length))
+    const columns = Math.max(8, e.props.bodyColumns - 2)
+    const cells = widths([...measured.slices.map(slice => slice.tokens), measured.free + measured.buffer], columns)
+    const [from, to] = GRADIENTS[tone(measured, config)]
     const pad = (text: string, width: number) => text + ' '.repeat(Math.max(0, width - cellWidth(text)))
 
     return (
@@ -352,31 +272,26 @@ export const register: Register = (on, options) => {
             {thousands(measured.tokens)} / {thousands(measured.window)} · 空き {thousands(measured.free)}
           </Text>
         </Box>
+        <Text>
+          {measured.slices.map((slice, index) => (
+            <Text color={slice.color}>{FULL.repeat(cells[index] ?? 0)}</Text>
+          ))}
+          <Text dimColor>{EMPTY.repeat(cells[measured.slices.length] ?? 0)}</Text>
+        </Text>
         <Box flexDirection="column">
-          {legend.map(slice => {
-            const bar = braille(slice.tokens / measured.window, barColumns)
-            return (
-              <Text>
-                <Text dimColor>{pad(slice.name, nameColumns)} </Text>
-                <Text color={slice.color}>{bar.filled}</Text>
-                <Text dimColor>{bar.empty}</Text>
-                <Text>{thousands(slice.tokens).padStart(7)}</Text>
-              </Text>
-            )
-          })}
+          {legend.map(slice => (
+            <Text>
+              <Text color={slice.color}>●</Text>
+              <Text> {pad(slice.name, nameColumns)} </Text>
+              <Text>{thousands(slice.tokens).padStart(tokenColumns)}</Text>
+              <Text dimColor>{`${Math.round((slice.tokens / measured.window) * 100)}%`.padStart(5)}</Text>
+            </Text>
+          ))}
         </Box>
-        {advice.isGood ? (
+        <Text>{left === null ? '⏱ キャッシュは切れています' : `⏱ キャッシュ切れまで ${left} 分`}</Text>
+        {next.length > 0 && (
           <Box flexDirection="column">
-            {advice.lines.map(line => (
-              <Text color="error" bold>{line}</Text>
-            ))}
-          </Box>
-        ) : (
-          <Text dimColor>{`🧹 ${config.redAt}% で /clear`}</Text>
-        )}
-        {advice.next.length > 0 && (
-          <Box flexDirection="column">
-            {nextRows(advice.next).map(row => (
+            {nextRows(next).map(row => (
               <Text>{row}</Text>
             ))}
           </Box>
@@ -395,18 +310,6 @@ export const register: Register = (on, options) => {
     return done
   })
 
-  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-    const ran = await next(e)
-    if (ran.deny !== undefined || ran.isError === true) return ran
-    const command = runnable(e.command)
-    if (!config.breakPattern.test(command)) return ran
-    const number = GH_MERGE.exec(command)?.[1] ?? PRUNE_MERGED.exec(command)?.[1]
-    const label = number === undefined ? '区切りのコマンドが走った' : `PR #${number} をマージした`
-    const at = await $.clock.now()
-    await update($, breakpoint, () => ({ label, at }))
-    return ran
-  })
-
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const measured = await read($, fill)
     if (e.props.hasSurvey || measured === null || measured.window === 0 || (await read($, isPaneShown))) return next(e)
@@ -414,44 +317,26 @@ export const register: Register = (on, options) => {
     const { Box, Text } = $.ui.resolve(e)
     const beneath = await next(e)
     await read($, tick)
-    const advice = await advise($, config, measured)
-    const color = advice.isGood ? 'error' : tone(measured, config)
+    const left = await cacheLeft($, config)
     const percent = `${measured.percent}%`
-    const right = advice.isGood ? '' : `${thousands(measured.tokens)} / ${thousands(measured.window)}`
+    const color = tone(measured, config)
+    const right = `${thousands(measured.tokens)} / ${thousands(measured.window)} · ${left === null ? 'キャッシュ切れ' : `キャッシュ ${left} 分`}`
     const fixed = 2 + cellWidth(percent) + 2 + 2 + cellWidth(right) + SLACK_COLUMNS
     const columns = Math.max(8, e.props.bodyColumns - fixed)
     const cells = widths([...measured.slices.map(slice => slice.tokens), measured.free + measured.buffer], columns)
-    const legend = [...measured.slices].sort((a, b) => b.tokens - a.tokens)
 
     return (
       <Box flexDirection="column">
         <Text>
           <Text color={color}>● </Text>
-          <Text bold color={advice.isGood ? 'error' : undefined}>{percent}</Text>
+          <Text bold color={color}>{percent}</Text>
           <Text>  </Text>
           {measured.slices.map((slice, index) => (
             <Text color={slice.color}>{FULL.repeat(cells[index] ?? 0)}</Text>
           ))}
-          <Text dimColor>{STEPS[0]?.repeat(cells[measured.slices.length] ?? 0)}</Text>
+          <Text dimColor>{EMPTY.repeat(cells[measured.slices.length] ?? 0)}</Text>
           <Text dimColor>  {right}</Text>
         </Text>
-        {advice.isGood ? (
-          advice.lines.map(line => (
-            <Text color="error" bold>{line}</Text>
-          ))
-        ) : (
-          <Text>
-            {legend.map(slice => (
-              <Text>
-                <Text color={slice.color}>   ●</Text>
-                <Text dimColor> {slice.name} {thousands(slice.tokens)}</Text>
-              </Text>
-            ))}
-          </Text>
-        )}
-        {nextRows(advice.next).map(row => (
-          <Text>{row}</Text>
-        ))}
         {beneath}
       </Box>
     )

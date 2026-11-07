@@ -9,8 +9,6 @@ export type Fill = {
   percent: number
 }
 
-export type Breakpoint = { label: string; at: number }
-
 export type Upcoming = { items: string[]; mtimeMs: number }
 
 declare module 'claude-code' {
@@ -18,7 +16,6 @@ declare module 'claude-code' {
     'context-gauge': {
       fill: Shaped<Fill | null>
       lastTurnEnd: number | null
-      breakpoint: Breakpoint | null
       sessionStart: number | null
       upcoming: Upcoming | null
       tick: number

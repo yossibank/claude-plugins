@@ -1,7 +1,7 @@
 {
   "name": "context-gauge",
-  "version": "0.1.0",
-  "description": "文脈の埋まり具合を種類ごとに色分けした棒で右の pane に出し、閉じている間は入力欄の上に出す。/clear の頃合いを知らせる",
+  "version": "0.2.0",
+  "description": "文脈の埋まり具合を種類ごとに色分けした棒で右の pane に出し、閉じている間は入力欄の上に 1 行で出す。キャッシュが切れるまでの時間も出す",
   "types": "./types/index.d.ts",
   "userConfig": {
     "cacheMinutes": {
@@ -17,20 +17,14 @@
     "yellowAt": {
       "type": "number",
       "title": "黄の割合（%）",
-      "description": "キャッシュが切れた時に頃合いとみなす文脈の割合",
+      "description": "数字と棒を黄にする文脈の割合",
       "default": 50
     },
     "redAt": {
       "type": "number",
       "title": "赤の割合（%）",
-      "description": "これ以上で /clear の頃合いとみなす文脈の割合",
+      "description": "数字と棒を赤にする文脈の割合",
       "default": 80
-    },
-    "breakPattern": {
-      "type": "string",
-      "title": "区切りのコマンド（正規表現）",
-      "description": "Bash のコマンドがこれに当たると、区切りとみなす。引数の引用符と heredoc の本文の中は見ない",
-      "default": "gh pr merge|prune-merged\\.sh"
     },
     "handoffPath": {
       "type": "string",
