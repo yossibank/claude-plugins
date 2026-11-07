@@ -62,9 +62,10 @@ const testLog = (command: string, cwd: string, spec: Watched) => {
       if (next !== '' && next !== '-' && !next.startsWith('~') && !next.startsWith('$')) base = place(base, next)
       continue
     }
-    const hit = segment.match(spec.command)
+    const isMake = /\bmake\b/.test(segment)
+    const hit = (isMake ? segment.replace(/\s-C\s*\S+/g, '') : segment).match(spec.command)
     if (hit === null) continue
-    const into = segment.match(/\bmake\b.*?\s-C\s*(\S+)/)?.[1]
+    const into = isMake ? segment.match(/\s-C\s*(\S+)/)?.[1] : undefined
     const dir = into === undefined ? base : place(base, into.replace(/^['"]|['"]$/g, ''))
     return { log: place(dir, spec.logPath), label: hit[0].trim() || segment.trim() }
   }
@@ -95,8 +96,8 @@ const finish = async ($: EngineInterface, isPassed: boolean, isLearnt: boolean) 
   if (last === null) return
   const took = last.now - last.startedAt
   if (isLearnt && last.passed + last.failed.length >= 1) {
-    await $.store.set('total', last.passed + last.failed.length)
-    await $.store.set('durationMs', took)
+    await $.store.set(`total:${last.label}`, last.passed + last.failed.length)
+    await $.store.set(`durationMs:${last.label}`, took)
   }
   await update($, run, () => null)
   $.ui.toast(
@@ -129,8 +130,8 @@ const tick = async ($: EngineInterface, spec: Watched, log: string, startedAt: n
 
 const watch = async ($: EngineInterface, spec: Watched, log: string, label: string) => {
   const startedAt = await $.clock.now()
-  const total = await $.store.get('total')
-  const lastMs = await $.store.get('durationMs')
+  const total = await $.store.get(`total:${label}`)
+  const lastMs = await $.store.get(`durationMs:${label}`)
   await update($, run, () => ({
     label,
     startedAt,

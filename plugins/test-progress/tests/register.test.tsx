@@ -40,7 +40,7 @@ test('通ったら本数をトーストで知らせ、次の回のために数�
 
   expect(seen.reads).toContain('/repo/.build/test.log')
   expect(seen.toasts).toEqual(['✔ make test 2 本通った · 0:00'])
-  expect(seen.store.get('total')).toBe(2)
+  expect(seen.store.get('total:make test')).toBe(2)
 })
 
 test('落ちたら落ちた本数を知らせる', async ($, on) => {
@@ -50,12 +50,12 @@ test('落ちたら落ちた本数を知らせる', async ($, on) => {
   await $.tool.call({ tool: 'Bash', command: 'make -C /work test SIMULATOR=x' })
 
   expect(seen.reads).toContain('/work/.build/test.log')
-  expect(seen.toasts).toEqual(['✖ make -C /work test 1 本落ちた · 0:00'])
+  expect(seen.toasts).toEqual(['✖ make test 1 本落ちた · 0:00'])
 })
 
 test('裏で走らせた間は、前の回の数で進みの帯を出す', async ($, on) => {
   const seen = fresh()
-  seen.store.set('total', 10)
+  seen.store.set('total:make test', 10)
   engine(on, '', seen)
 
   await $.tool.call({ tool: 'Bash', command: 'make test', run_in_background: true })
@@ -92,6 +92,26 @@ const OTHER = {
   succeededLine: '^GOOD$',
 }
 
+test('make -C の後ろのフォルダの名前は、見張るコマンドとして当てない', async ($, on) => {
+  const seen = fresh()
+  engine(on, PASSED_LOG, seen)
+
+  await $.tool.call({ tool: 'Bash', command: 'make -C test verify' })
+
+  expect(seen.reads).toEqual([])
+  expect(seen.toasts).toEqual([])
+})
+
+test('前の回の数は、当たったコマンドごとに分けて覚える', { options: { commandPattern: '\\b(?:make|swift) test\\b' } }, async ($, on) => {
+  const seen = fresh()
+  engine(on, PASSED_LOG, seen)
+
+  await $.tool.call({ tool: 'Bash', command: 'swift test' })
+
+  expect(seen.store.get('total:swift test')).toBe(2)
+  expect(seen.store.has('total:make test')).toBe(false)
+})
+
 test('options で見張るコマンド・ログの置き場・行の形を変えられる', { options: OTHER }, async ($, on) => {
   const seen = fresh()
   engine(on, OTHER_LOG.replace('bad: login\n', ''), seen)
@@ -102,7 +122,7 @@ test('options で見張るコマンド・ログの置き場・行の形を変え
   await $.tool.call({ tool: 'Bash', command: 'swift test --parallel 2>&1 | tee out/check.log' })
   expect(seen.reads).toContain('/repo/out/check.log')
   expect(seen.toasts).toEqual(['✔ swift test 3 本通った · 0:00'])
-  expect(seen.store.get('total')).toBe(3)
+  expect(seen.store.get('total:swift test')).toBe(3)
 })
 
 test('壊れた正規表現は初めの値に戻る', { options: { passedLine: '(', commandPattern: '(' } }, async ($, on) => {
@@ -126,29 +146,29 @@ test('cd のあとの make は、動かした先を基点にする', async ($, o
 
 test('落ちた回は総数を覚えない', { options: OTHER }, async ($, on) => {
   const seen = fresh()
-  seen.store.set('total', 10)
+  seen.store.set('total:swift test', 10)
   engine(on, OTHER_LOG.replace('GOOD\n', ''), seen)
 
   await $.tool.call({ tool: 'Bash', command: 'swift test' })
 
   expect(seen.toasts).toEqual(['✖ swift test 1 本落ちた · 0:00'])
-  expect(seen.store.get('total')).toBe(10)
-  expect(seen.store.has('durationMs')).toBe(false)
+  expect(seen.store.get('total:swift test')).toBe(10)
+  expect(seen.store.has('durationMs:swift test')).toBe(false)
 })
 
 test('0 本の回は総数を覚えない', async ($, on) => {
   const seen = fresh()
-  seen.store.set('total', 10)
+  seen.store.set('total:make test', 10)
   engine(on, 'Test Succeeded\n', seen)
 
   await $.tool.call({ tool: 'Bash', command: 'make test' })
 
-  expect(seen.store.get('total')).toBe(10)
+  expect(seen.store.get('total:make test')).toBe(10)
 })
 
 test('ログが 5 分変わらないと、帯を消して止める', async ($, on) => {
   const seen = fresh()
-  seen.store.set('total', 10)
+  seen.store.set('total:make test', 10)
   const clock = mock.clock(on, { now: 1_000_000 })
   engine(on, '✔ a() (0.1 seconds)\n', seen, '/repo', 1_000_000, true)
   const props = { hasSurvey: false, isWorking: true, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} }
@@ -166,5 +186,5 @@ test('ログが 5 分変わらないと、帯を消して止める', async ($, o
   await clock.advance(5 * 60_000)
   expect(await shown()).toBe(false)
   expect(seen.toasts).toEqual([])
-  expect(seen.store.get('total')).toBe(10)
+  expect(seen.store.get('total:make test')).toBe(10)
 })
