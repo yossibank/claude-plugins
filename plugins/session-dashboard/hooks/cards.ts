@@ -9,6 +9,12 @@ import { heat, HEAT, ICON, TN } from './palette'
 import { elapsedOf, untilReset } from './time'
 import { gradeOf, kilo, thousands } from './tokens'
 
+// 割合の列（空白 + 100%）の幅
+const PERCENT_COLUMNS = 5
+// 戻るまでの時間を出すのに要る棒の最小の幅
+const MIN_BAR_COLUMNS = 4
+// 使った量の列（6 桁にそろえた量 + 空白）の幅
+const AMOUNT_COLUMNS = 7
 const FILES_SHOWN = 5
 const TASKS_SHOWN = 8
 // 1 時間あたりの費用を出すまでの分数
@@ -64,14 +70,14 @@ export const limitCard = (limits: readonly Limit[], now: number, inner: number) 
   const resets = limits.map(limit => untilReset(limit.resetsAt, now))
   // 棒の長さをそろえるため、戻るまでの時間は一番長いものの幅で取る
   const resetWidth = Math.max(0, ...resets.map(until => cellWidth(until)))
-  const isResetShown = resetWidth > 0 && value - 5 - resetWidth - 1 >= 4
+  const isResetShown = resetWidth > 0 && value - PERCENT_COLUMNS - resetWidth - 1 >= MIN_BAR_COLUMNS
   return card(
     [{ text: `${ICON.limit} Limit`, color: TN.yellow, bold: true }],
     limits.map((limit, index): [Seg[], Seg[]] => {
       const percent = `${Math.round(limit.percentUsed)}%`.padStart(4)
       // 棒が 4 も取れなければ、戻るまでの時間を落とす
       const reset = isResetShown ? ` ${' '.repeat(resetWidth - cellWidth(resets[index] ?? ''))}${resets[index] ?? ''}` : ''
-      const columns = Math.max(1, value - 5 - (isResetShown ? resetWidth + 1 : 0))
+      const columns = Math.max(1, value - PERCENT_COLUMNS - (isResetShown ? resetWidth + 1 : 0))
       return [
         keys[index] ?? [],
         [...gradient(limit.percentUsed / 100, columns, HEAT, TN.line), { text: ` ${percent}`, color: heat(limit.percentUsed / 100), bold: true }, { text: reset, color: TN.comment }],
@@ -97,7 +103,7 @@ export const contextCard = (measured: Fill, left: number | null, inner: number) 
       [[{ text: 'used', color: TN.comment }], [...gradient(measured.percent / 100, Math.max(1, value - cellWidth(total) - 1), [TN.blue, TN.magenta], TN.line), { text: ` ${total}`, color: TN.fg }]],
       ...legend.map((slice): [Seg[], Seg[]] => [
         [{ text: slice.name, color: TN.fgDark }],
-        [{ text: kilo(slice.tokens).padStart(6), color: TN.fg }, { text: ' ' }, ...gradient(slice.tokens / top, Math.max(1, value - 7), [TN.magenta, TN.magenta], TN.bgHighlight, '━', ' ')],
+        [{ text: kilo(slice.tokens).padStart(6), color: TN.fg }, { text: ' ' }, ...gradient(slice.tokens / top, Math.max(1, value - AMOUNT_COLUMNS), [TN.magenta, TN.magenta], TN.bgHighlight, '━', ' ')],
       ]),
     ],
     inner,

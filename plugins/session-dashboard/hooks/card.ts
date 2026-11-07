@@ -4,7 +4,14 @@ import { fitSegs, padSegs, segWidth } from './cell'
 import type { Seg } from './cell'
 import { TN } from './palette'
 
-export const valueWidth = (inner: number, keyWidth: number) => Math.max(1, inner - keyWidth - 7)
+// 2 列の表の罫線と余白が取る幅（│ 空白 / 空白 │ 空白 / 空白 │）
+const TABLE_COLUMNS = 7
+// 題と下の note を埋める罫線の外側が取る幅（╭─ 空白 / 空白 ╮）
+const TITLE_COLUMNS = 5
+// これより狭い値の列では、表を描かない
+const MIN_VALUE_COLUMNS = 4
+
+export const valueWidth = (inner: number, keyWidth: number) => Math.max(1, inner - keyWidth - TABLE_COLUMNS)
 
 export const keyWidthOf = (rows: [Seg[], Seg[]][]) => Math.max(1, ...rows.map(([key]) => segWidth(key)))
 
@@ -12,18 +19,18 @@ export const keyWidthOf = (rows: [Seg[], Seg[]][]) => Math.max(1, ...rows.map(([
 export const card = (title: Seg[], rows: [Seg[], Seg[]][], inner: number, note?: Seg[]): Seg[][] => {
   const line = TN.line
   const keyWidth = keyWidthOf(rows)
-  const value = inner - keyWidth - 7
+  const value = valueWidth(inner, keyWidth)
   // 表が描けないほど狭ければ、罫線を外して 1 行ずつ並べる
-  if (value < 4)
+  if (value < MIN_VALUE_COLUMNS)
     return [fitSegs(title, inner), ...rows.map(([key, cell]) => fitSegs([...key, { text: ' ' }, ...cell], inner)), ...(note === undefined ? [] : [fitSegs(note, inner)])]
-  const head = fitSegs(title, Math.max(1, inner - 5))
-  const out: Seg[][] = [[{ text: '╭─ ', color: line }, ...head, { text: ` ${'─'.repeat(Math.max(0, inner - 5 - segWidth(head)))}╮`, color: line }]]
+  const head = fitSegs(title, Math.max(1, inner - TITLE_COLUMNS))
+  const out: Seg[][] = [[{ text: '╭─ ', color: line }, ...head, { text: ` ${'─'.repeat(Math.max(0, inner - TITLE_COLUMNS - segWidth(head)))}╮`, color: line }]]
   for (const [key, cell] of rows)
     out.push([{ text: '│ ', color: line }, ...padSegs(key, keyWidth), { text: ' │ ', color: line }, ...padSegs(cell, value), { text: ' │', color: line }])
   if (note === undefined) out.push([{ text: `╰${'─'.repeat(keyWidth + 2)}┴${'─'.repeat(value + 2)}╯`, color: line }])
   else {
-    const tail = fitSegs(note, Math.max(1, inner - 5))
-    out.push([{ text: `╰${'─'.repeat(Math.max(0, inner - 5 - segWidth(tail)))} `, color: line }, ...tail, { text: ' ─╯', color: line }])
+    const tail = fitSegs(note, Math.max(1, inner - TITLE_COLUMNS))
+    out.push([{ text: `╰${'─'.repeat(Math.max(0, inner - TITLE_COLUMNS - segWidth(tail)))} `, color: line }, ...tail, { text: ' ─╯', color: line }])
   }
   return out
 }

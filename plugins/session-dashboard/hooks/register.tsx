@@ -2,7 +2,7 @@ import type { Register, Timer } from 'claude-code'
 
 import type { Phase } from '../types'
 
-import { act, currentActivity, currentSecond, forget, nextCallNumber, phaseLine, running, tickWhileRunning } from './activity'
+import { act, clearCalls, currentActivity, currentRunning, currentSecond, endCall, forget, phaseLine, startCall, tickWhileRunning } from './activity'
 import { statusLine, workingLine } from './band'
 import { claudeCard, contextCard, filesCard, limitCard, nextCard, nowCard, repoCard, sessionCard, tasksCard, unmeasuredCard } from './cards'
 import { draw } from './cell'
@@ -12,6 +12,7 @@ import { configure, PANE, SLACK_COLUMNS, TITLE, WATCH_MS } from './config'
 import { currentFiles, touchFile } from './files'
 import { currentRepo, readRepo } from './git'
 import { nextOf } from './handoff'
+import { report } from './report'
 import { cacheLeft, currentSession, endTurn, restart, watchPane } from './session'
 import { countCall, countTurn, currentStats } from './stats'
 import { currentTasks, trackTasks } from './tasks'
@@ -31,9 +32,11 @@ export const register: Register = (on, options) => {
     await readClaude($)
     await readRepo($, true)
     await $.command.register({ name: 'session-dashboard', description: 'セッションの計器盤を右の pane に出す' })
-    void $.ui.open({ id: PANE, title: TITLE })
+    $.ui.open({ id: PANE, title: TITLE }).catch(error => report($, 'pane を開くこと', error))
     watcher?.cancel()
-    watcher = $.clock.every(WATCH_MS, () => void watchPane($))
+    watcher = $.clock.every(WATCH_MS, () => {
+      watchPane($).catch(error => report($, 'pane の見張り', error))
+    })
     return started
   })
 
@@ -81,7 +84,7 @@ export const register: Register = (on, options) => {
         }
         const chunk = piece.value
         // 届いた途中の chunk で、応答の終わりを待たずに今の作業を書き換える
-        if (chunk.kind === 'thinking' && isMain && !isThinking && running.size === 0) {
+        if (chunk.kind === 'thinking' && isMain && !isThinking && (await currentRunning($)).length === 0) {
           isThinking = true
           await act($, { phase: 'thinking' })
         } else if (chunk.kind === 'text' && isMain) {
@@ -89,9 +92,9 @@ export const register: Register = (on, options) => {
           const line = firstLine(text)
           if (line !== null && line !== said) {
             said = line
-            await act($, { said, ...(running.size === 0 && isThinking ? { phase: 'done' as Phase } : {}) })
+            await act($, { said, ...((await currentRunning($)).length === 0 && isThinking ? { phase: 'done' as Phase } : {}) })
           }
-        } else if (chunk.kind === 'tool' && !QUIET_TOOLS.has(chunk.name) && running.size === 0) {
+        } else if (chunk.kind === 'tool' && !QUIET_TOOLS.has(chunk.name) && (await currentRunning($)).length === 0) {
           await act($, { tool: toolName(chunk.name, e.agentId), phase: 'preparing', startedAt: null })
         }
         yield chunk
@@ -111,18 +114,21 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     const args = e as unknown as Args
     const isShown = !QUIET_TOOLS.has(e.tool)
-    const id = e.tool_use_id ?? `call-${nextCallNumber()}`
     const tool = describe(args)
+    const calls = isShown ? await countCall($) : 0
+    const id = e.tool_use_id ?? `call-${calls}`
     if (isShown) {
-      await countCall($)
-      running.set(id, { tool, startedAt: await $.clock.now() })
+      const startedAt = await $.clock.now()
+      await startCall($, { id, tool, startedAt })
       tickWhileRunning($, true)
-      await act($, { tool, phase: 'running', startedAt: running.get(id)!.startedAt })
+      await act($, { tool, phase: 'running', startedAt })
     }
     const done = await next(e).finally(async () => {
-      if (!isShown || !running.delete(id)) return
+      if (!isShown) return
+      const left = await endCall($, id)
+      if (left === null) return
       // まだ動いている呼び出しがあれば、最後に始まったものを出す
-      const last = [...running.values()].pop()
+      const last = left.at(-1)
       if (last !== undefined) await act($, { tool: last.tool, phase: 'running', startedAt: last.startedAt })
       else {
         tickWhileRunning($, false)
@@ -183,7 +189,7 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="column" paddingX={1}>
-        {cards.map(line => draw(Text, line))}
+        {cards.map((line, index) => draw(Text, line, String(index)))}
       </Box>
     )
   })
@@ -193,7 +199,7 @@ export const register: Register = (on, options) => {
     if (e.agentId === undefined) {
       await endTurn($)
       await countTurn($)
-      running.clear()
+      await clearCalls($)
       tickWhileRunning($, false)
       await act($, { isWorking: false, tool: null, phase: null, startedAt: null })
       await readRepo($, true)
@@ -220,8 +226,8 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="column">
-        {working.length === 0 ? null : draw(Text, working)}
-        {draw(Text, statusLine(info, git, measured, left, width))}
+        {working.length === 0 ? null : draw(Text, working, 'working')}
+        {draw(Text, statusLine(info, git, measured, left, width), 'status')}
         {beneath}
       </Box>
     )

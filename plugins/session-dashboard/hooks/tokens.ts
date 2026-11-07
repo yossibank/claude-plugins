@@ -4,7 +4,7 @@ import type { EngineInterface } from 'claude-code'
 import type { Fill } from '../types'
 
 
-const fill = atom({ plugin: 'session-dashboard', key: 'fill' } as const, null, { shape: 'fill-1' })
+const fill = atom({ plugin: 'session-dashboard', key: 'fill' } as const, null, { shape: 'fill-2' })
 
 const GRADES = [
   { name: 'S', from: 0.7, color: '#7ee0ff' },
@@ -41,9 +41,8 @@ export async function measure($: EngineInterface) {
   const measured: Fill = {
     slices: rows
       .filter(row => row.kind === 'used' && row.tokens > 0)
-      .map(row => ({ name: NAMES[row.name] ?? row.name, tokens: row.tokens, color: row.color })),
+      .map(row => ({ name: NAMES[row.name] ?? row.name, tokens: row.tokens })),
     free: of('free'),
-    buffer: of('buffer'),
     tokens: context.tokens ?? context.breakdown?.totalTokens ?? 0,
     window: context.window,
     percent: context.percent ?? context.breakdown?.percentage ?? 0,

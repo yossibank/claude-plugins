@@ -1,5 +1,7 @@
 import { expect, mock, test, type TestBody } from 'claude-code/testing'
 
+import { cellWidth } from '../hooks/cell'
+
 type On = Parameters<TestBody>[1]
 type File = { text: string; mtimeMs: number }
 
@@ -14,9 +16,21 @@ const GIT: Record<string, string> = {
   'status --porcelain': ' M a.ts\n?? new.ts\n',
 }
 
-const engine = (on: On, percent: number, window = 200000, isShown = false, files: Record<string, File> = {}, state: { isUsageBroken: boolean; free?: number; hold?: Promise<never> } = { isUsageBroken: false }) => {
+type State = {
+  isUsageBroken: boolean
+  free?: number
+  hold?: Promise<never>
+  isRepoMissing?: boolean
+  isVersionBroken?: boolean
+  isPanesBroken?: boolean
+  chunks?: readonly Record<string, unknown>[]
+  answer?: string
+}
+
+const engine = (on: On, percent: number, window = 200000, isShown = false, files: Record<string, File> = {}, state: State = { isUsageBroken: false }) => {
   const clock = mock.clock(on, { now: T0 })
   const counts = { panes: 0 }
+  const toasts: string[] = []
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: '/repo/sub' }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
@@ -25,13 +39,18 @@ const engine = (on: On, percent: number, window = 200000, isShown = false, files
   on('classic.SessionStart', () => ({}))
   on('command.register', () => ({ value: { command: 'session-dashboard' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', (_, e) => {
+    toasts.push((e as { text: string }).text)
+    return { value: undefined } as never
+  })
   on('ui.panes', () => {
     counts.panes += 1
+    if (state.isPanesBroken === true) return { deny: 'panes failed' }
     return { value: [{ id: 'session-dashboard', title: '📊 Session', isShown, isFocused: false, isPlaced: true }] }
   })
-  on('session.repo', () => ({ value: { root: '/repo', remote: 'git@github.com:owner/app.git', internal: false, name: null } }))
+  on('session.repo', () => ({ value: state.isRepoMissing === true ? null : { root: '/repo', remote: 'git@github.com:owner/app.git', internal: false, name: null } }) as never)
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
-  on('session.version', () => ({ value: { version: '2.1.319', base: '2.1.319' } }))
+  on('session.version', () => (state.isVersionBroken === true ? { deny: 'version failed' } : { value: { version: '2.1.319', base: '2.1.319' } }))
   on('process.run', (_, e) => {
     const stdout = GIT[e.argv.slice(1, 3).join(' ')] ?? '/repo\n'
     return { value: { exitCode: 0, stdout, stderr: '' } as never }
@@ -81,7 +100,11 @@ const engine = (on: On, percent: number, window = 200000, isShown = false, files
     const { Text } = $.ui.resolve(e)
     return <Text>engine</Text>
   })
-  return { clock, counts }
+  on('turn.step', async function* (_, e) {
+    for (const chunk of state.chunks ?? []) yield chunk as never
+    return { turnId: e.turnId, index: e.index, answer: state.answer ?? '', toolUses: [], stopReason: 'end_turn', usage: null } as never
+  })
+  return { clock, counts, toasts }
 }
 
 const start = ($: Parameters<TestBody>[0]) => $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
@@ -102,7 +125,7 @@ const PANE = {
   props: { title: '📊 Session', isFocused: false, bodyColumns: 40, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
 } as const
 
-const cells = (line: string) => [...line].reduce((sum, char) => sum + (/[ᄀ-ᅟ⺀-꓏가-힣＀-｠]|\p{Extended_Pictographic}/u.test(char) ? 2 : 1), 0)
+const cells = cellWidth
 
 type Engine = Parameters<TestBody>[0]
 
@@ -570,4 +593,61 @@ test('Session: /clear の後は、それまでの費用を 1 時間あたりの�
   await clock.advance(30 * MINUTE)
 
   expect((await lines($)).some(line => /│ calls +│ 0 · \$0\.00\/h +│$/u.test(line))).toBe(true)
+})
+
+test('turn.step: 考え中・応答の最初の行・準備中のツールを今の作業に出し、モデルを書き換える', async ($, on) => {
+  const state: State = {
+    isUsageBroken: false,
+    chunks: [
+      { kind: 'thinking', index: 0, text: '考える' },
+      { kind: 'text', index: 1, text: '## 結論です\n詳細' },
+      { kind: 'tool', index: 2, id: 'u1', name: 'mcp__github__get_issue' },
+    ],
+    answer: '## 結論です\n詳細',
+  }
+  engine(on, 41, 200000, false, {}, state)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'claude-sonnet-5-5', messageCount: 1 })) void _
+
+  const found = await lines($)
+  expect(found.some(line => /^│ 作業 │ 結論です +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /^│ 実行 │ mcp__github__get_issue を準備しています…|^│ 実行 │ get_issue を準備しています… +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /^│ model │ Sonnet 5\.5 +│$/u.test(line))).toBe(true)
+})
+
+test('今の作業: mcp__ のツールは最後の名前だけを出す', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await $.tool.call({ tool: 'mcp__github__get_issue' } as never)
+
+  expect((await lines($)).some(line => /^│ 実行 │ ✓ get_issue +│$/u.test(line))).toBe(true)
+})
+
+test('リポジトリが無ければ、リポジトリの表もブランチも出さない', async ($, on) => {
+  engine(on, 41, 200000, false, {}, { isUsageBroken: false, isRepoMissing: true })
+  await start($)
+
+  expect((await lines($)).some(line => /owner\/app|branch/.test(line))).toBe(false)
+  expect((await bandLines($))[0]).not.toMatch(/feat\/dash/)
+})
+
+test('版を取れなかったら、覚えずに次の読み直しでもう一度取る', async ($, on) => {
+  const state: State = { isUsageBroken: false, isVersionBroken: true }
+  engine(on, 41, 200000, false, {}, state)
+  await start($)
+  expect((await lines($)).some(line => /v2\.1\.319/.test(line))).toBe(false)
+
+  state.isVersionBroken = false
+  await $.classic.SessionStart({ source: 'clear' })
+  expect((await lines($)).some(line => /v2\.1\.319/.test(line))).toBe(true)
+})
+
+test('pane の見張りに失敗したら、同じ失敗は 1 度だけトーストで知らせる', async ($, on) => {
+  const { clock, toasts } = engine(on, 41, 200000, false, {}, { isUsageBroken: false, isPanesBroken: true })
+  await start($)
+  await clock.advance(6000)
+
+  expect(toasts.filter(text => /pane の見張り.*panes failed/.test(text))).toHaveLength(1)
 })

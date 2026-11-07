@@ -62,10 +62,10 @@ export const padSegs = (segs: readonly Seg[], width: number): Seg[] => {
 
 type TextElement = ReturnType<EngineInterface['ui']['resolve']>['Text']
 
-export const draw = (Text: TextElement, segs: readonly Seg[]) => (
-  <Text>
-    {segs.map(seg => (
-      <Text {...(seg.color === undefined ? {} : { color: seg.color })} {...(seg.bold === true ? { bold: true } : {})}>
+export const draw = (Text: TextElement, segs: readonly Seg[], key: string) => (
+  <Text key={key}>
+    {segs.map((seg, index) => (
+      <Text key={String(index)} {...(seg.color === undefined ? {} : { color: seg.color })} {...(seg.bold === true ? { bold: true } : {})}>
         {seg.text}
       </Text>
     ))}

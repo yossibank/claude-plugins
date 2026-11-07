@@ -14,8 +14,9 @@ export async function resetStats($: EngineInterface) {
   await update($, stats, () => NO_STATS)
 }
 
+// 数えた後の回数を返す
 export async function countCall($: EngineInterface) {
-  await update($, stats, now => ({ ...now, calls: now.calls + 1 }))
+  return (await update($, stats, now => ({ ...now, calls: now.calls + 1 }))).calls
 }
 
 export async function countTurn($: EngineInterface) {

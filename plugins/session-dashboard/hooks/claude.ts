@@ -20,8 +20,6 @@ const modelName = (id: string) => {
 export const limitsOf = (limits: readonly Limit[]): Limit[] =>
   limits.map(limit => ({ kind: limit.kind, percentUsed: limit.percentUsed, ...(limit.resetsAt === undefined ? {} : { resetsAt: limit.resetsAt }) }))
 
-export let version: string | undefined
-
 export async function currentClaude($: EngineInterface) {
   return read($, claude)
 }
@@ -39,10 +37,11 @@ export async function updateModel($: EngineInterface, id: string) {
 }
 
 export async function readClaude($: EngineInterface) {
-  version ??= (await $.session.version().catch(() => undefined))?.version ?? ''
+  const before = await read($, claude)
+  // 取れなかった版は覚えず、次の読み直しでもう一度取る
+  const version = before?.version || ((await $.session.version().catch(() => undefined))?.version ?? '')
   const model = await $.session.model().catch(() => '')
   const usage = await $.session.usage().catch(() => undefined)
-  const before = await read($, claude)
   const next: Claude = {
     model: modelName(model),
     version,
