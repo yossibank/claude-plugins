@@ -83,9 +83,26 @@ const pngs = async ($: EngineInterface, dir: string) => {
   return entries.filter(entry => entry.kind === 'file' && entry.name.endsWith('.png'))
 }
 
+const isSetName = (set: string) => /^[\w-][\w.-]*$/.test(set) && !set.includes('..')
+
+const fail = (what: string, stderr: string) => `snapshot-gallery: ${what}に失敗しました: ${stderr.trim().slice(0, 80)}`
+
+// 終了コードが 0 でなければ toast で知らせて false を返す。起動できなかった時も同じ
+const succeeded = async ($: EngineInterface, argv: string[], what: string) => {
+  try {
+    const { exitCode, stderr } = await $.process.run(argv)
+    if (exitCode === 0) return true
+    $.ui.toast(fail(what, stderr))
+  } catch (error) {
+    $.ui.toast(fail(what, error instanceof Error ? error.message : String(error)))
+  }
+  return false
+}
+
 const hashes = async ($: EngineInterface, files: string[]) => {
   if (files.length === 0) return new Map<string, string>()
-  const { stdout } = await $.process.run(['shasum', '-a', '1', ...files])
+  const { exitCode, stdout, stderr } = await $.process.run(['shasum', '-a', '1', ...files])
+  if (exitCode !== 0) $.ui.toast(fail('ハッシュの取得', stderr))
   return new Map(
     stdout
       .split('\n')
@@ -100,7 +117,8 @@ const hashes = async ($: EngineInterface, files: string[]) => {
 const sizes = async ($: EngineInterface, files: string[]) => {
   const found = new Map<string, { width: number; height: number }>()
   if (files.length === 0) return found
-  const { stdout } = await $.process.run(['sips', '-g', 'pixelWidth', '-g', 'pixelHeight', ...files])
+  const { exitCode, stdout, stderr } = await $.process.run(['sips', '-g', 'pixelWidth', '-g', 'pixelHeight', ...files])
+  if (exitCode !== 0) $.ui.toast(fail('画像の大きさの取得', stderr))
   let file = ''
   for (const line of stdout.split('\n')) {
     const width = line.match(/pixelWidth: (\d+)/)
@@ -128,7 +146,8 @@ const collect = async ($: EngineInterface, root: string, set: string, dirs: Fold
       const afterPath = join(afterDir, entry.name)
       const old = before.get(entry.name)
       const beforePath = old ? join(beforeDir, entry.name) : undefined
-      const status = beforePath === undefined ? 'added' : hash.get(afterPath) === hash.get(beforePath) ? 'same' : 'changed'
+      const afterHash = hash.get(afterPath)
+      const status = beforePath === undefined ? 'added' : afterHash !== undefined && afterHash === hash.get(beforePath) ? 'same' : 'changed'
       const { width, height } = size.get(afterPath) ?? { width: 1, height: 1 }
       return {
         name: entry.name.replace(/\.png$/, ''),
@@ -183,7 +202,9 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'snapshots' }, async ($, e) => {
     const set = e.args.trim()
     if (set.length > 0) {
+      if (!isSetName(set)) return { text: 'セットの名前が正しくありません' }
       const found = await collect($, await $.session.cwd(), set, dirs)
+      if (found.cases.length === 0) return { text: `${set} の画像がありません` }
       await update($, gallery, () => found)
     }
     const state = await read($, gallery)
@@ -198,15 +219,21 @@ export const register: Register = (on, options) => {
 
     const base = moveBase(await $.session.cwd(), e.command, found.index ?? 0)
     const set = found[1] ?? ''
-    if (!/^[\w-][\w.-]*$/.test(set) || set.includes('..')) return next(e)
+    if (!isSetName(set)) return next(e)
     const afterDir = join(base, dirs.after, set)
     const beforeDir = join(base, dirs.before, set)
     const pending = `${beforeDir}.pending`
-    const isCopied = (await pngs($, afterDir)).length > 0
+    const backup = `${beforeDir}.old`
+    let isCopied = (await pngs($, afterDir)).length > 0
     if (isCopied) {
-      await $.process.run(['rm', '-rf', pending])
-      await $.process.run(['mkdir', '-p', pending])
-      await $.process.run(['rsync', '-a', '--delete', '--include', '*.png', '--exclude', '*', `${afterDir}/`, `${pending}/`])
+      const isReady =
+        (await succeeded($, ['rm', '-rf', pending], '一時のフォルダの削除')) &&
+        (await succeeded($, ['mkdir', '-p', pending], '一時のフォルダの作成')) &&
+        (await succeeded($, ['rsync', '-a', '--delete', '--include', '*.png', '--exclude', '*', `${afterDir}/`, `${pending}/`], '前の画像の写し'))
+      if (!isReady) {
+        await $.process.run(['rm', '-rf', pending]).catch(() => undefined)
+        isCopied = false
+      }
     }
 
     let ran
@@ -221,8 +248,16 @@ export const register: Register = (on, options) => {
       return ran
     }
     if (isCopied) {
-      await $.process.run(['rm', '-rf', beforeDir])
-      await $.process.run(['mv', pending, beforeDir])
+      // before は退避してから入れ替え、失敗したら戻す
+      const hasBefore = await $.fs.exists(beforeDir)
+      const isKept = hasBefore && (await succeeded($, ['rm', '-rf', backup], '古い退避の削除')) && (await succeeded($, ['mv', beforeDir, backup], '前の画像の退避'))
+      const isSwapped = (!hasBefore || isKept) && (await succeeded($, ['mv', pending, beforeDir], '前の画像の入れ替え'))
+      if (isSwapped) {
+        if (isKept) await succeeded($, ['rm', '-rf', backup], '退避の削除')
+      } else {
+        if (isKept) await $.process.run(['mv', backup, beforeDir]).catch(() => undefined)
+        await $.process.run(['rm', '-rf', pending]).catch(() => undefined)
+      }
     }
 
     const drawn = await collect($, base, set, dirs)
