@@ -29,7 +29,7 @@
     "breakPattern": {
       "type": "string",
       "title": "区切りのコマンド（正規表現）",
-      "description": "Bash のコマンドがこれに当たると、区切りとみなす",
+      "description": "Bash のコマンドがこれに当たると、区切りとみなす。引数の引用符と heredoc の本文の中は見ない",
       "default": "gh pr merge|prune-merged\\.sh"
     },
     "handoffPath": {

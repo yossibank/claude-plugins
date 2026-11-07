@@ -41,7 +41,7 @@ brew install terminal-browser
 | context-gauge | `cacheMinutes` | `60` | プロンプトキャッシュの寿命の分数。`5` か `60` |
 | context-gauge | `yellowAt` | `50` | キャッシュが切れた時に、頃合いとみなす文脈の割合 |
 | context-gauge | `redAt` | `80` | これ以上で頃合いとみなす文脈の割合 |
-| context-gauge | `breakPattern` | `gh pr merge\|prune-merged\.sh` | 区切りとみなす Bash のコマンドの正規表現 |
+| context-gauge | `breakPattern` | `gh pr merge\|prune-merged\.sh` | 区切りとみなす Bash のコマンドの正規表現。引数の引用符と heredoc の本文の中は見ない |
 | context-gauge | `handoffPath` | `.claude/handoff.md` | 引き継ぎメモの置き場 |
 | test-progress | `target` | `test` | 見張る make のターゲット |
 | test-progress | `logPath` | `.build/test.log` | コマンドが `tee` で書き込むログの置き場 |
