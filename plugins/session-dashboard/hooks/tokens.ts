@@ -38,14 +38,17 @@ export async function measure($: EngineInterface) {
   const { context } = usage
   const rows = context.breakdown?.categories ?? []
   const of = (kind: string) => rows.filter(row => row.kind === kind).reduce((sum, row) => sum + row.tokens, 0)
+  // 分母は /context と同じ、要約に入る手前までの窓にする。0 は測る前の印なので残す
+  const window = context.window === 0 ? 0 : (context.breakdown?.rawMaxTokens ?? context.window)
+  const tokens = context.tokens ?? context.breakdown?.totalTokens ?? 0
   const measured: Fill = {
     slices: rows
       .filter(row => row.kind === 'used' && row.tokens > 0)
       .map(row => ({ name: NAMES[row.name] ?? row.name, tokens: row.tokens })),
     free: of('free'),
-    tokens: context.tokens ?? context.breakdown?.totalTokens ?? 0,
-    window: context.window,
-    percent: context.percent ?? context.breakdown?.percentage ?? 0,
+    tokens,
+    window,
+    percent: window === 0 ? 0 : Math.round((tokens / window) * 100),
   }
   await update($, fill, () => measured)
 }

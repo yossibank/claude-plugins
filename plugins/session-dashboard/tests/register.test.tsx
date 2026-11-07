@@ -19,6 +19,8 @@ const GIT: Record<string, string> = {
 type State = {
   isUsageBroken: boolean
   free?: number
+  raw?: number
+  isUnanswered?: boolean
   hold?: Promise<never>
   isRepoMissing?: boolean
   isVersionBroken?: boolean
@@ -77,14 +79,13 @@ const engine = (on: On, percent: number, window = 200000, isShown = false, files
       ],
       cost: { usd: 1.236 },
       context: {
-        tokens: (percent * window) / 100,
+        ...(state.isUnanswered === true ? {} : { tokens: (percent * window) / 100, percent }),
         window,
-        percent,
         breakdown: {
           categories: [row('System prompt', 18000, 'used'), row('Messages', 64000, 'used'), row('Free space', state.free ?? 100000, 'free'), row('Autocompact buffer', 18000, 'buffer')],
           totalTokens: 82000,
           maxTokens: 200000,
-          rawMaxTokens: 200000,
+          rawMaxTokens: state.raw ?? 200000,
           percentage: percent,
           gridRows: [],
           model: 'claude-opus-5-5',
@@ -264,6 +265,15 @@ test('pane: 文脈の表の題に割合を、行に使った量と種類を多�
   const system = found.findIndex(line => /^│ システム │ {2}18\.0k ━+ *│$/u.test(line))
   expect(talk).toBeGreaterThan(0)
   expect(system).toBeGreaterThan(talk)
+})
+
+test('pane: 応答の前は、見積もりの合計を要約の窓に対する割合で出す', async ($, on) => {
+  engine(on, 8, 1000000, false, {}, { isUsageBroken: false, raw: 400000, isUnanswered: true })
+  await start($)
+
+  const found = await lines($)
+  expect(found.some(line => /^╭─ . Context 21% ─+╮$/u.test(line))).toBe(true)
+  expect(found.some(line => /━+ 82k\/400k │$/u.test(line))).toBe(true)
 })
 
 const gradeCases: [number, string, string][] = [
