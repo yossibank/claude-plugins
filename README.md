@@ -55,3 +55,11 @@ brew install terminal-browser
 1. `plugins/<名前>/` にプラグインを置く。
 2. `.claude-plugin/marketplace.json` の `plugins` に足す。
 3. `claude plugin validate .` で検査する。
+
+## 📏 版の上げ方
+
+| 変えたもの | `plugin.json` の `version` で上げる所 | 例 |
+| --- | --- | --- |
+| 設定の名前を消す・替える、前の動きが残らない変更 | 2 つ目 | `0.1.0` → `0.2.0` |
+| 機能を足す、不具合を直す | 3 つ目 | `0.1.0` → `0.1.1` |
+| 文書・テストだけ | 上げない | |
