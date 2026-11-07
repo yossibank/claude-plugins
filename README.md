@@ -30,7 +30,7 @@ flowchart LR
 | 道具 | 版 | 使う所 |
 | --- | --- | --- |
 | Claude Code | 2.1.319 | プラグインの実行、`claude plugin validate`、`claude plugin test` |
-| TypeScript | 5.4 以上 | `tsc` での型の検査 |
+| TypeScript | 5.4 以上 | `make types` での型の検査 |
 | jq | | `make verify` の version と description の検査 |
 | terminal-browser | | pr-browser |
 | macOS | | snapshot-gallery の `shasum`・`sips`・`open` |
@@ -75,7 +75,7 @@ flowchart LR
 5. 状態の型は `types/index.d.ts` に書き、`plugin.json` の `types` で指す。
 6. `.claude-plugin/marketplace.json` の `plugins` に足す。`description` は `plugin.json` と同じにする。
 7. プラグインの README を置き、機能の表に行を足す。
-8. `make verify` と `make test` で確かめる。
+8. `make verify` と `make test` で確かめる。`tsc` があれば `make types` も通す。
 
 ```json
 { "extends": "./.claude-plugin/types/tsconfig.json" }

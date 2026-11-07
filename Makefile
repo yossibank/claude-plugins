@@ -2,7 +2,7 @@
 
 verify:
 	@failed=0; \
-	for target in validate types versions descriptions; do \
+	for target in validate versions descriptions; do \
 		$(MAKE) --no-print-directory $$target || failed=1; \
 	done; \
 	exit $$failed
