@@ -407,6 +407,25 @@ test('/clear と session.start のやり直しの後は、今の作業を忘れ�
   expect((await lines($)).some(line => /画面を直しています/.test(line))).toBe(false)
 })
 
+test('/clear で state が空になっても、Claude・リポジトリ・上限の表を出し直す', async ($, on) => {
+  // /clear は新しいセッションとして続き、state は初めの値に戻り、session.start は来ない
+  const cleared = new Set<string>()
+  on('state.set', (_, e, next) => {
+    cleared.delete((e as { key: string }).key)
+    return next(e)
+  })
+  on('state.get', (_, e, next) => (cleared.has((e as { key: string }).key) ? ({ value: { value: undefined, version: 0 } } as never) : next(e)))
+  engine(on, 41)
+  await start($)
+  for (const key of ['claude', 'repo', 'fill']) cleared.add(key)
+  await $.classic.SessionStart({ source: 'clear' })
+
+  const found = await lines($)
+  expect(found.some(line => /Claude/.test(line))).toBe(true)
+  expect(found.some(line => /owner\/app/.test(line))).toBe(true)
+  expect(found.some(line => /│ 5h /.test(line))).toBe(true)
+})
+
 test('測る前は、文脈の表に「まだ測っていません」と出す', async ($, on) => {
   engine(on, 41, 0)
   await start($)
