@@ -40,7 +40,7 @@ export type Stats = { turns: number; calls: number; usdAtStart: number | null }
 
 declare module 'claude-code' {
   interface PluginState {
-    'session-dash': {
+    'session-dashboard': {
       fill: Shaped<Fill | null>
       lastTurnEnd: number | null
       sessionStart: number | null

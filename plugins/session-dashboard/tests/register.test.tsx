@@ -23,11 +23,11 @@ const engine = (on: On, percent: number, window = 200000, isShown = false, files
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('session.measure', (_, e) => ({ changed: e.changed }))
   on('classic.SessionStart', () => ({}))
-  on('command.register', () => ({ value: { command: 'session-dash' } }))
+  on('command.register', () => ({ value: { command: 'session-dashboard' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.panes', () => {
     counts.panes += 1
-    return { value: [{ id: 'session-dash', title: '📊 Session', isShown, isFocused: false, isPlaced: true }] }
+    return { value: [{ id: 'session-dashboard', title: '📊 Session', isShown, isFocused: false, isPlaced: true }] }
   })
   on('session.repo', () => ({ value: { root: '/repo', remote: 'git@github.com:owner/app.git', internal: false, name: null } }))
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
@@ -87,7 +87,7 @@ const engine = (on: On, percent: number, window = 200000, isShown = false, files
 const start = ($: Parameters<TestBody>[0]) => $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
 
 const BAND = {
-  plugin: 'session-dash',
+  plugin: 'session-dashboard',
   surface: 'terminal',
   component: 'AbovePrompt',
   props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
@@ -95,10 +95,10 @@ const BAND = {
 } as const
 
 const PANE = {
-  plugin: 'session-dash',
+  plugin: 'session-dashboard',
   surface: 'terminal',
   component: 'Pane',
-  requestId: 'session-dash',
+  requestId: 'session-dashboard',
   props: { title: '📊 Session', isFocused: false, bodyColumns: 40, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
 } as const
 
@@ -489,7 +489,7 @@ test('session.start を繰り返しても見張りのタイマーは重ならな
 test('右の pane が見えている間は、入力欄の上に帯を出さない', async ($, on) => {
   engine(on, 41, 200000, true)
   await start($)
-  await $.command.run({ command: 'session-dash', args: '' } as never)
+  await $.command.run({ command: 'session-dashboard', args: '' } as never)
 
   const ui = await $.ui.mount(BAND)
   expect(await ui.find({ type: 'Text', text: /ctx/ })).toBeUndefined()

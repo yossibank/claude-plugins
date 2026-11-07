@@ -65,26 +65,26 @@ const NAMES: Record<string, string> = {
   Messages: '会話',
 }
 const SLACK_COLUMNS = 2
-const PANE = 'session-dash'
+const PANE = 'session-dashboard'
 const TITLE = '📊 Session'
 const WATCH_MS = 2000
 
-const fill = atom({ plugin: 'session-dash', key: 'fill' } as const, null, { shape: 'fill-1' })
-const lastTurnEnd = atom({ plugin: 'session-dash', key: 'lastTurnEnd' } as const, null)
-const sessionStart = atom({ plugin: 'session-dash', key: 'sessionStart' } as const, null)
-const upcoming = atom({ plugin: 'session-dash', key: 'upcoming' } as const, null)
-const tick = atom({ plugin: 'session-dash', key: 'tick' } as const, 0)
-const isPaneShown = atom({ plugin: 'session-dash', key: 'isPaneShown' } as const, false)
-const claude = atom({ plugin: 'session-dash', key: 'claude' } as const, null)
-const repo = atom({ plugin: 'session-dash', key: 'repo' } as const, null)
+const fill = atom({ plugin: 'session-dashboard', key: 'fill' } as const, null, { shape: 'fill-1' })
+const lastTurnEnd = atom({ plugin: 'session-dashboard', key: 'lastTurnEnd' } as const, null)
+const sessionStart = atom({ plugin: 'session-dashboard', key: 'sessionStart' } as const, null)
+const upcoming = atom({ plugin: 'session-dashboard', key: 'upcoming' } as const, null)
+const tick = atom({ plugin: 'session-dashboard', key: 'tick' } as const, 0)
+const isPaneShown = atom({ plugin: 'session-dashboard', key: 'isPaneShown' } as const, false)
+const claude = atom({ plugin: 'session-dashboard', key: 'claude' } as const, null)
+const repo = atom({ plugin: 'session-dashboard', key: 'repo' } as const, null)
 const IDLE: Activity = { isWorking: false, task: null, said: null, tool: null, phase: null, startedAt: null }
-const activity = atom({ plugin: 'session-dash', key: 'activity' } as const, IDLE)
-const second = atom({ plugin: 'session-dash', key: 'second' } as const, 0)
+const activity = atom({ plugin: 'session-dashboard', key: 'activity' } as const, IDLE)
+const second = atom({ plugin: 'session-dashboard', key: 'second' } as const, 0)
 const NO_TASKS: Tasks = { items: [], current: null }
-const tasks = atom({ plugin: 'session-dash', key: 'tasks' } as const, NO_TASKS)
-const files = atom({ plugin: 'session-dash', key: 'files' } as const, [] as Touched[])
+const tasks = atom({ plugin: 'session-dashboard', key: 'tasks' } as const, NO_TASKS)
+const files = atom({ plugin: 'session-dashboard', key: 'files' } as const, [] as Touched[])
 const NO_STATS: Stats = { turns: 0, calls: 0, usdAtStart: null }
-const stats = atom({ plugin: 'session-dash', key: 'stats' } as const, NO_STATS)
+const stats = atom({ plugin: 'session-dashboard', key: 'stats' } as const, NO_STATS)
 
 const GIT_MS = 2000
 const LIMIT_NAMES: Record<string, string> = { five_hour: '5h', seven_day: '7d', spend_limit: '$' }
@@ -612,7 +612,7 @@ export const register: Register = (on, options) => {
     await forget($)
     await readClaude($)
     await readRepo($, true)
-    await $.command.register({ name: 'session-dash', description: 'セッションの計器盤を右の pane に出す' })
+    await $.command.register({ name: 'session-dashboard', description: 'セッションの計器盤を右の pane に出す' })
     void $.ui.open({ id: PANE, title: TITLE })
     watcher?.cancel()
     watcher = $.clock.every(WATCH_MS, () => void watchPane($))
@@ -724,7 +724,7 @@ export const register: Register = (on, options) => {
     return done
   })
 
-  on('command.run', { command: 'session-dash' }, async $ => {
+  on('command.run', { command: 'session-dashboard' }, async $ => {
     await $.ui.open({ id: PANE, title: TITLE })
     await watchPane($)
     return { text: 'セッションの計器盤を右の pane に出しました。' }
