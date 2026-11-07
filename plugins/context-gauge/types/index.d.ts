@@ -9,8 +9,20 @@ export type Fill = {
   percent: number
 }
 
+export type Breakpoint = { label: string; at: number }
+
+export type Upcoming = { items: string[]; mtimeMs: number }
+
 declare module 'claude-code' {
   interface PluginState {
-    'context-gauge': { fill: Shaped<Fill | null>; pullRequest: number | null; isPaneShown: boolean }
+    'context-gauge': {
+      fill: Shaped<Fill | null>
+      lastTurnEnd: number | null
+      breakpoint: Breakpoint | null
+      sessionStart: number | null
+      upcoming: Upcoming | null
+      tick: number
+      isPaneShown: boolean
+    }
   }
 }

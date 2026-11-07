@@ -3,12 +3,19 @@ import { expect, test, type TestBody } from 'claude-code/testing'
 type On = Parameters<TestBody>[1]
 
 const ROOT = '/repo'
-const AFTER = `${ROOT}/.build/snapshots/review`
-const BEFORE = `${ROOT}/.build/snapshots-before/review`
+const DEFAULT_AFTER = `${ROOT}/.build/snapshots/review`
+const DEFAULT_BEFORE = `${ROOT}/.build/snapshots-before/review`
+const AFTER = DEFAULT_AFTER
+const BEFORE = DEFAULT_BEFORE
 
 const file = (name: string, mtimeMs: number) => ({ name, kind: 'file' as const, size: 1, mtimeMs, isLink: false })
 
-const engine = (on: On, ran: string[][]) => {
+type Setup = { root?: string; after?: string; before?: string; failure?: Record<string, unknown> }
+
+const engine = (on: On, ran: string[][], setup: Setup = {}) => {
+  const root = setup.root ?? ROOT
+  const AFTER = setup.after ?? DEFAULT_AFTER
+  const BEFORE = setup.before ?? DEFAULT_BEFORE
   const dirs = new Map([
     [AFTER, [file('review-balance-narrow.png', 2), file('review-list-narrow.png', 2), file('review-new-narrow.png', 2)]],
     [BEFORE, [file('review-balance-narrow.png', 1), file('review-list-narrow.png', 1)]],
@@ -21,11 +28,12 @@ const engine = (on: On, ran: string[][]) => {
     [`${AFTER}/review-new-narrow.png`]: 'n1',
   }
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.cwd', () => ({ value: root }))
   on('command.register', () => ({ value: { command: 'snapshots' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('fs.exists', (_, e) => ({ value: dirs.has(e.path) }))
   on('fs.list', (_, e) => ({ value: dirs.get(e.path ?? '') ?? [] }))
-  on('tool.call', () => ({ result: { stdout: '', stderr: '' }, text: '' }))
+  on('tool.call', () => ({ result: { stdout: '', stderr: '' }, text: '', ...setup.failure }))
   on('process.run', (_, e) => {
     const argv = [...e.argv]
     ran.push(argv)
@@ -55,7 +63,8 @@ test('描く前に古い PNG を取っておき、描いた後に前と後を並
 
   await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
 
-  expect(ran).toContainEqual(['rsync', '-a', '--delete', '--include', '*.png', '--exclude', '*', `${AFTER}/`, `${BEFORE}/`])
+  expect(ran).toContainEqual(['rsync', '-a', '--delete', '--include', '*.png', '--exclude', '*', `${AFTER}/`, `${BEFORE}.pending/`])
+  expect(ran).toContainEqual(['mv', `${BEFORE}.pending`, BEFORE])
 
   const ui = await $.ui.mount(PANE)
   expect(await ui.find({ type: 'Text', text: /^1 \/ 3$/ })).toBeDefined()
@@ -108,4 +117,74 @@ test('ほかの make では何もしない', async ($, on) => {
   await $.tool.call({ tool: 'Bash', command: 'make verify' })
 
   expect(ran).toEqual([])
+})
+
+const OPTIONS = {
+  commandPattern: 'make\\s+(?:-C\\s+\\S+\\s+)?shots\\s+SET=(\\S+)',
+  snapshotsDir: 'out/now',
+  beforeDir: 'out/prev',
+}
+
+test('options でコマンドとフォルダを変えられる', { options: OPTIONS }, async ($, on) => {
+  const ran: string[][] = []
+  engine(on, ran, { after: `${ROOT}/out/now/review`, before: `${ROOT}/out/prev/review` })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+  expect(ran).toEqual([])
+
+  await $.tool.call({ tool: 'Bash', command: 'make shots SET=review' })
+  expect(ran).toContainEqual(['mv', `${ROOT}/out/prev/review.pending`, `${ROOT}/out/prev/review`])
+})
+
+test('cd の先を基点にする（相対は今の基点から、&& の前だけ）', { options: OPTIONS }, async ($, on) => {
+  const ran: string[][] = []
+  engine(on, ran, { after: '/repo/app/sub/out/now/review', before: '/repo/app/sub/out/prev/review' })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+
+  await $.tool.call({ tool: 'Bash', command: 'cd app && cd ./sub; make shots SET=review' })
+  expect(ran).toContainEqual(['mv', '/repo/app/sub/out/prev/review.pending', '/repo/app/sub/out/prev/review'])
+})
+
+test('make -C の先を基点にする', { options: OPTIONS }, async ($, on) => {
+  const ran: string[][] = []
+  engine(on, ran, { after: '/other/out/now/review', before: '/other/out/prev/review' })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+
+  await $.tool.call({ tool: 'Bash', command: 'make -C /other shots SET=review' })
+  expect(ran).toContainEqual(['mv', '/other/out/prev/review.pending', '/other/out/prev/review'])
+
+  ran.length = 0
+  await $.tool.call({ tool: 'Bash', command: 'cd /other && make -C ../repo shots SET=review' })
+  expect(ran).toEqual([])
+})
+
+test('make が失敗したら before はそのままで、一時のフォルダを消す', async ($, on) => {
+  const ran: string[][] = []
+  engine(on, ran, { failure: { isError: true } })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+
+  expect(ran).toContainEqual(['rsync', '-a', '--delete', '--include', '*.png', '--exclude', '*', `${AFTER}/`, `${BEFORE}.pending/`])
+  expect(ran).toContainEqual(['rm', '-rf', `${BEFORE}.pending`])
+  expect(ran.some(argv => argv[0] === 'mv' || (argv[0] === 'rm' && argv.at(-1) === BEFORE))).toBe(false)
+})
+
+test('初めの値のままで make -C dir snapshot も見張り、基点が dir になる', async ($, on) => {
+  const ran: string[][] = []
+  engine(on, ran, { after: '/other/.build/snapshots/review', before: '/other/.build/snapshots-before/review' })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+
+  await $.tool.call({ tool: 'Bash', command: 'make -C /other snapshot SNAPSHOT=review' })
+  expect(ran).toContainEqual(['mv', '/other/.build/snapshots-before/review.pending', '/other/.build/snapshots-before/review'])
+})
+
+test('セットの名前が上のフォルダを指す時は、写しも消しもしない', async ($, on) => {
+  const ran: string[][] = []
+  engine(on, ran)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=..' })
+  expect(ran.some(argv => argv[0] === 'rm' || argv[0] === 'rsync' || argv[0] === 'mv')).toBe(false)
 })
