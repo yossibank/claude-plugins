@@ -542,3 +542,13 @@ test('Files: 書き換えたファイルを新しい順に、回数とフォル�
   expect(at(/│ ×1 │ b\.md repo +│$/u)).toBeGreaterThan(at(/a\.ts hooks/))
   expect(found.some(line => /c\.ts/.test(line) && /×/.test(line))).toBe(false)
 })
+
+test('Session: /clear の後は、それまでの費用を 1 時間あたりの費用に数えない', async ($, on) => {
+  const { clock } = engine(on, 41)
+  await start($)
+  await $.classic.SessionStart({ source: 'clear' })
+  await $.session.measure({ context: { window: 200000 }, rateLimits: [], cost: { usd: 1.236 }, changed: ['cost'] } as never)
+  await clock.advance(30 * MINUTE)
+
+  expect((await lines($)).some(line => /│ calls +│ 0 · \$0\.00\/h +│$/u.test(line))).toBe(true)
+})

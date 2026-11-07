@@ -261,6 +261,12 @@ const modelName = (id: string) => {
   return found[2] === undefined ? name : `${name} ${found[2]}.${found[3]}`
 }
 
+// 分数を 1h05m・12m の形にする
+const hoursMinutes = (minutes: number) => {
+  const hours = Math.floor(minutes / 60)
+  return hours > 0 ? `${hours}h${String(minutes % 60).padStart(2, '0')}m` : `${minutes}m`
+}
+
 const untilReset = (resetsAt: string | undefined, now: number) => {
   if (resetsAt === undefined) return ''
   const minutes = Math.floor((Date.parse(resetsAt) - now) / 60_000)
@@ -268,11 +274,15 @@ const untilReset = (resetsAt: string | undefined, now: number) => {
   if (minutes <= 0) return 'soon'
   const hours = Math.floor(minutes / 60)
   if (hours >= 24) return `${Math.floor(hours / 24)}d${hours % 24}h`
-  return hours > 0 ? `${hours}h${String(minutes % 60).padStart(2, '0')}m` : `${minutes}m`
+  return hoursMinutes(minutes)
 }
 
 const limitsOf = (limits: readonly Limit[]): Limit[] =>
   limits.map(limit => ({ kind: limit.kind, percentUsed: limit.percentUsed, ...(limit.resetsAt === undefined ? {} : { resetsAt: limit.resetsAt }) }))
+
+// 始めた時の費用を覚え、1 時間あたりの費用をこのセッションの分だけで出す
+const markStart = ($: EngineInterface, usd: number | null) =>
+  update($, stats, now => (now.usdAtStart === null && usd !== null ? { ...now, usdAtStart: usd } : now))
 
 let version: string | undefined
 
@@ -288,8 +298,7 @@ const readClaude = async ($: EngineInterface) => {
     limits: usage === undefined ? (before?.limits ?? []) : limitsOf(usage.rateLimits),
   }
   await update($, claude, () => next)
-  // 始めた時の費用を覚え、1 時間あたりの費用をこのセッションの分だけで出す
-  await update($, stats, now => (now.usdAtStart === null && next.usd !== null ? { ...now, usdAtStart: next.usd } : now))
+  await markStart($, next.usd)
 }
 
 // origin の URL から owner/repo を取る
@@ -569,12 +578,7 @@ const changeSegs = (git: Repo, palette: { green: string; red: string; yellow: st
   return parts.length === 0 ? [{ text: 'なし', color: palette.comment }] : parts.flatMap((part, index) => (index === 0 ? [part] : [{ text: ' ' }, part]))
 }
 
-// 経った時間を 1h12m・12m の形にする
-const elapsedOf = (ms: number) => {
-  const minutes = Math.max(0, Math.floor(ms / 60_000))
-  const hours = Math.floor(minutes / 60)
-  return hours > 0 ? `${hours}h${String(minutes % 60).padStart(2, '0')}m` : `${minutes}m`
-}
+const elapsedOf = (ms: number) => hoursMinutes(Math.max(0, Math.floor(ms / 60_000)))
 
 const TASK_MARKS: Record<TaskItem['status'], Seg> = {
   completed: { text: '✓', color: TN.green },
@@ -630,6 +634,7 @@ export const register: Register = (on, options) => {
       const limits = limitsOf(e.rateLimits)
       const usd = e.cost?.usd ?? null
       await update($, claude, now => (now === null ? now : { ...now, limits, usd: usd ?? now.usd }))
+      await markStart($, usd)
     }
     return measured
   })
