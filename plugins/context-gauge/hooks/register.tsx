@@ -219,7 +219,7 @@ export const register: Register = (on, options) => {
     const next = await nextOf($, config)
     const grade = gradeOf(measured)
     const legend = [...measured.slices].sort((a, b) => b.tokens - a.tokens)
-    const inner = Math.max(32, e.props.bodyColumns - 2)
+    const inner = Math.max(1, e.props.bodyColumns - 2)
     const nameColumns = Math.max(NAME_COLUMNS, ...legend.map(slice => cellWidth(slice.name)))
     const percent = `${measured.percent}%`
     const clock = left === null ? 'cold' : `${left}m`

@@ -201,10 +201,17 @@ test('pane: 棒は幅いっぱいで、狭くても収まる', async ($, on) => 
     const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: columns } })
     const used = (await ui.find({ type: 'Text', text: /^41% / }))?.text ?? ''
     const row = (await ui.find({ type: 'Text', text: /^● 会話/ }))?.text ?? ''
-    expect(cells(used)).toBe(Math.max(32, columns - 2))
-    expect(cells(row)).toBeLessThanOrEqual(Math.max(32, columns - 2))
+    expect(cells(used)).toBe(columns - 2)
+    expect(cells(row)).toBeLessThanOrEqual(columns - 2)
     await ui.unmount()
   }
+
+  const narrow = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 24 } })
+  const head = (await narrow.find({ type: 'Text', text: /^CONTEXT / }))?.text ?? ''
+  const used = (await narrow.find({ type: 'Text', text: /^41% / }))?.text ?? ''
+  expect(cells(head)).toBe(22)
+  expect(cells(used)).toBe(22)
+  await narrow.unmount()
 })
 
 test('pane: キャッシュの残りと棒を出す。切れたら cold と空の棒', async ($, on) => {
