@@ -14,7 +14,7 @@ const GIT: Record<string, string> = {
   'status --porcelain': ' M a.ts\n?? new.ts\n',
 }
 
-const engine = (on: On, percent: number, window = 200000, isShown = false, files: Record<string, File> = {}, state: { isUsageBroken: boolean; free?: number } = { isUsageBroken: false }) => {
+const engine = (on: On, percent: number, window = 200000, isShown = false, files: Record<string, File> = {}, state: { isUsageBroken: boolean; free?: number; hold?: Promise<never> } = { isUsageBroken: false }) => {
   const clock = mock.clock(on, { now: T0 })
   const counts = { panes: 0 }
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -73,7 +73,10 @@ const engine = (on: On, percent: number, window = 200000, isShown = false, files
     } as never,
     }
   })
-  on('tool.call', (_, e) => (e.tool === 'TaskCreate' ? { result: { task: { id: '1', subject: 'x' } }, text: 'ok' } : { result: { stdout: 'ok', stderr: '' }, text: 'ok' }) as never)
+  on('tool.call', (_, e) => {
+    if (state.hold !== undefined && e.tool === 'Bash') return state.hold
+    return (e.tool === 'TaskCreate' ? { result: { task: { id: '1', subject: 'x' } }, text: 'ok' } : { result: { stdout: 'ok', stderr: '' }, text: 'ok' }) as never
+  })
   on('ui.render', ($, e) => {
     const { Text } = $.ui.resolve(e)
     return <Text>engine</Text>
@@ -407,7 +410,7 @@ test('今の作業: 作業中の Task とツールを 2 行で出し、ターン
 
   const ui = await $.ui.mount(PANE)
   expect(await ui.find({ type: 'Text', text: /^NOW {4}画面を直しています$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^ {7}Bash: 確かめる$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^ {7}✓ Bash: 確かめる$/ })).toBeDefined()
   await ui.unmount()
 
   await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'end_turn' } as never)
@@ -424,7 +427,7 @@ test('今の作業: サブエージェントの呼び出しには ↳ を付け�
   await $.tool.call({ tool: 'Grep', pattern: 'foo', agentId: 'a1' } as never)
 
   const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /^ {7}↳ Grep: foo$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^ {7}✓ ↳ Grep: foo$/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -450,7 +453,7 @@ test('入力欄の上: 作業中だけ、今の作業を 2 行足す', async ($,
 
   const ui = await $.ui.mount(BAND)
   expect(await ui.find({ type: 'Text', text: /^▸ 直しています$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^ {2}Edit: a\.ts$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^ {2}✓ Edit: a\.ts$/ })).toBeDefined()
   await ui.unmount()
 
   await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'end_turn' } as never)
@@ -516,4 +519,26 @@ test('session.start をやり直したら今の作業を忘れる', async ($, on
   const ui = await $.ui.mount(PANE)
   expect(await ui.find({ type: 'Text', text: /古い作業/ })).toBeUndefined()
   await ui.unmount()
+})
+
+test('今の作業: ツールが動いている間は ● と経った秒数を出し、終わったら ✓ にする', async ($, on) => {
+  let release = () => {}
+  const hold = new Promise<never>(resolve => {
+    release = () => resolve({ result: { stdout: 'ok', stderr: '' }, text: 'ok' } as never)
+  })
+  const { clock } = engine(on, 41, 200000, false, {}, { isUsageBroken: false, hold })
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  const call = $.tool.call({ tool: 'Bash', command: 'make test', description: 'テストする' } as never)
+  await clock.advance(3000)
+
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: /^ {7}● Bash: テストする {2}3s$/ })).toBeDefined()
+  await ui.unmount()
+
+  release()
+  await call
+  const after = await $.ui.mount(PANE)
+  expect(await after.find({ type: 'Text', text: /^ {7}✓ Bash: テストする$/ })).toBeDefined()
+  await after.unmount()
 })

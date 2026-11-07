@@ -17,7 +17,16 @@ export type Claude = { model: string; version: string; usd: number | null; limit
 
 export type Repo = { name: string; branch: string; added: number; deleted: number; untracked: number }
 
-export type Activity = { isWorking: boolean; task: string | null; said: string | null; tool: string | null }
+export type Phase = 'thinking' | 'preparing' | 'running' | 'done'
+
+export type Activity = {
+  isWorking: boolean
+  task: string | null
+  said: string | null
+  tool: string | null
+  phase?: Phase | null
+  startedAt?: number | null
+}
 
 declare module 'claude-code' {
   interface PluginState {
@@ -31,6 +40,7 @@ declare module 'claude-code' {
       claude: Claude | null
       repo: Repo | null
       activity: Activity
+      second: number
     }
   }
 }

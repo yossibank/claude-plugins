@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PluginOptions, Register, Timer } from 'claude-code'
 
-import type { Activity, Claude, Fill, Limit, Repo, Upcoming } from '../types'
+import type { Activity, Claude, Fill, Limit, Phase, Repo, Upcoming } from '../types'
 
 const NEXT_LINE = /^\s*[-*]\s*次[：:]\s*(.*)$/
 const NEXT_ITEM = /(?:^|\s)\d+[.．]\s+/
@@ -40,8 +40,9 @@ const tick = atom({ plugin: 'session-dash', key: 'tick' } as const, 0)
 const isPaneShown = atom({ plugin: 'session-dash', key: 'isPaneShown' } as const, false)
 const claude = atom({ plugin: 'session-dash', key: 'claude' } as const, null)
 const repo = atom({ plugin: 'session-dash', key: 'repo' } as const, null)
-const IDLE: Activity = { isWorking: false, task: null, said: null, tool: null }
+const IDLE: Activity = { isWorking: false, task: null, said: null, tool: null, phase: null, startedAt: null }
 const activity = atom({ plugin: 'session-dash', key: 'activity' } as const, IDLE)
+const second = atom({ plugin: 'session-dash', key: 'second' } as const, 0)
 
 const GREEN = '#7fe0a0'
 const YELLOW = '#e8d27a'
@@ -374,9 +375,42 @@ const track = (e: Args, result: unknown) => {
 
 const act = ($: EngineInterface, change: Partial<Activity>) => update($, activity, now => ({ ...now, ...change, task: taskLine() }))
 
+// 名前だけの 1 行。準備中のツールに使う
+const toolName = (tool: string, agentId: string | undefined) => {
+  const name = tool.startsWith('mcp__') ? (tool.split('__').pop() ?? tool) : tool
+  return agentId === undefined ? name : `↳ ${name}`
+}
+
+let running = 0
+let ticker: Timer | undefined
+
+// ツールが動いている間だけ、経った秒数のために 1 秒ごとに描き直す
+const tickWhileRunning = ($: EngineInterface, isRunning: boolean) => {
+  if (!isRunning) {
+    ticker?.cancel()
+    ticker = undefined
+    return
+  }
+  ticker ??= $.clock.every(1000, () => void $.clock.now().then(now => update($, second, () => Math.floor(now / 1000))))
+}
+
+const phaseLine = (doing: Activity, now: number): { mark: string; text: string; color: string } | null => {
+  const phase = doing.phase ?? null
+  if (phase === 'thinking') return { mark: '', text: '考えています…', color: MUTED }
+  if (doing.tool === null) return null
+  if (phase === 'preparing') return { mark: '', text: `${doing.tool} を準備しています…`, color: MUTED }
+  if (phase === 'running') {
+    const seconds = doing.startedAt == null ? 0 : Math.max(0, Math.floor((now - doing.startedAt) / 1000))
+    return { mark: '● ', text: `${doing.tool}  ${seconds}s`, color: INK }
+  }
+  return { mark: '✓ ', text: doing.tool, color: MUTED }
+}
+
 const forget = async ($: EngineInterface) => {
   tasks.clear()
   current = null
+  running = 0
+  tickWhileRunning($, false)
   await update($, activity, () => IDLE)
 }
 
@@ -417,13 +451,41 @@ export const register: Register = (on, options) => {
 
   on('turn.start', async ($, e, next) => {
     const started = await next(e)
-    if (e.agentId === undefined) await act($, { isWorking: true, tool: null })
+    if (e.agentId === undefined) await act($, { isWorking: true, tool: null, phase: null, startedAt: null })
     return started
   })
 
   on('turn.step', async function* ($, e, next) {
-    const stepped = yield* next(e)
-    if (e.agentId === undefined) {
+    const isMain = e.agentId === undefined
+    const stream = next(e)
+    let text = ''
+    let said: string | null = null
+    let isThinking = false
+    let stepped: Awaited<typeof stream.result>
+    while (true) {
+      const piece = await stream.next()
+      if (piece.done === true) {
+        stepped = piece.value
+        break
+      }
+      const chunk = piece.value
+      // 届いた途中の chunk で、応答の終わりを待たずに今の作業を書き換える
+      if (chunk.kind === 'thinking' && isMain && !isThinking && running === 0) {
+        isThinking = true
+        await act($, { phase: 'thinking' })
+      } else if (chunk.kind === 'text' && isMain) {
+        text += chunk.text
+        const line = firstLine(text)
+        if (line !== null && line !== said) {
+          said = line
+          await act($, { said, ...(running === 0 && isThinking ? { phase: 'done' as Phase } : {}) })
+        }
+      } else if (chunk.kind === 'tool' && !QUIET_TOOLS.has(chunk.name)) {
+        await act($, { tool: toolName(chunk.name, e.agentId), phase: 'preparing', startedAt: null })
+      }
+      yield chunk
+    }
+    if (isMain) {
       const said = firstLine(stepped.answer)
       if (said !== null) await act($, { said })
       const model = modelName(e.model)
@@ -434,8 +496,20 @@ export const register: Register = (on, options) => {
 
   on('tool.call', async ($, e, next) => {
     const args = e as unknown as Args
-    if (!QUIET_TOOLS.has(e.tool)) await act($, { tool: describe(args) })
-    const done = await next(e)
+    const isShown = !QUIET_TOOLS.has(e.tool)
+    if (isShown) {
+      running += 1
+      tickWhileRunning($, true)
+      await act($, { tool: describe(args), phase: 'running', startedAt: await $.clock.now() })
+    }
+    const done = await next(e).finally(async () => {
+      if (!isShown) return
+      running = Math.max(0, running - 1)
+      if (running === 0) {
+        tickWhileRunning($, false)
+        await act($, { phase: 'done' })
+      }
+    })
     if ('result' in done) {
       track(args, done.result)
       if (QUIET_TOOLS.has(e.tool)) await act($, {})
@@ -461,6 +535,8 @@ export const register: Register = (on, options) => {
     const info = await read($, claude)
     const git = await read($, repo)
     const doing = await read($, activity)
+    await read($, second)
+    const step = phaseLine(doing, now)
 
     const claudeRow =
       info === null ? null : (
@@ -509,10 +585,11 @@ export const register: Register = (on, options) => {
         {label('NOW')}
         <Text color={doing.isWorking ? INK : MUTED}>{fit(summary ?? '待っています', body)}</Text>
       </Text>,
-      doing.isWorking && doing.tool !== null ? (
+      doing.isWorking && step !== null ? (
         <Text>
           {label('')}
-          <Text color={MUTED}>{fit(doing.tool, body)}</Text>
+          {step.mark === '' ? null : <Text color={step.mark === '● ' ? AMBER : GREEN}>{step.mark}</Text>}
+          <Text color={step.color}>{fit(step.text, body - cellWidth(step.mark))}</Text>
         </Text>
       ) : null,
       !doing.isWorking && summary !== null ? (
@@ -601,7 +678,9 @@ export const register: Register = (on, options) => {
     if (e.agentId === undefined) {
       const now = await $.clock.now()
       await update($, lastTurnEnd, () => now)
-      await act($, { isWorking: false, tool: null })
+      running = 0
+      tickWhileRunning($, false)
+      await act($, { isWorking: false, tool: null, phase: null, startedAt: null })
       await readRepo($, true)
     }
     await measure($)
@@ -624,6 +703,8 @@ export const register: Register = (on, options) => {
     const bar = meter(measured.percent / 100, Math.max(4, Math.min(PROMPT_BAR_MAX, e.props.bodyColumns - fixed)))
 
     const doing = await read($, activity)
+    await read($, second)
+    const step = phaseLine(doing, await $.clock.now())
     const summary = doing.task ?? doing.said
     const width = Math.max(4, e.props.bodyColumns - SLACK_COLUMNS - 2)
     const info = await read($, claude)
@@ -645,10 +726,11 @@ export const register: Register = (on, options) => {
             <Text color={INK}>{fit(summary, width)}</Text>
           </Text>
         ) : null}
-        {doing.isWorking && doing.tool !== null ? (
+        {doing.isWorking && step !== null ? (
           <Text>
             <Text>  </Text>
-            <Text color={MUTED}>{fit(doing.tool, width)}</Text>
+            {step.mark === '' ? null : <Text color={step.mark === '● ' ? AMBER : GREEN}>{step.mark}</Text>}
+            <Text color={step.color}>{fit(step.text, width - cellWidth(step.mark))}</Text>
           </Text>
         ) : null}
         <Text>
