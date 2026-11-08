@@ -21,11 +21,24 @@
 
 ## 🚀 足し方
 
-1. 上のファイルを `plugins/<名前>/` に置く。
+1. 下の「名前の付け方」で名前を決め、上のファイルを `plugins/<名前>/` に置く。
 2. `claude --plugin-dir plugins/<名前>` で読み込む。`.claude-plugin/types/` ができる。git には入れない。
 3. `.claude-plugin/marketplace.json` の `plugins` に足す。`description` は `plugin.json` と同じにする。
 4. ルートの [README.md](../README.md) の機能の表に行を足す。
 5. `make verify` と `make test` で確かめる。`tsc` があれば `make types` も通す。
+
+## 🏷️ 名前の付け方
+
+名前は `<何を>-<どう見せるか>` の形の kebab-case にする。後ろの語は、次の表から選ぶ。
+
+| 後ろの語 | 使う時 | 例 |
+| --- | --- | --- |
+| `-progress` | 動いている間の進みを出し、終わったら止まるか消える | `test-progress`、`agent-progress` |
+| `-dashboard` | 数字をずっと出しておく | `session-dashboard` |
+| `-gallery` | 画像を並べる | `snapshot-gallery` |
+| `-browser` | ページを開く | `pr-browser` |
+
+動作そのものが役目のものは、`handoff` のように動詞 1 語でもよい。表に無い見せ方の時は、表に語を足してから名前を付ける。
 
 ## 📏 バージョンの上げ方
 
