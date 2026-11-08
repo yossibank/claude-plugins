@@ -118,6 +118,7 @@ test('メモから次にすることと未検証を取り出す', () => {
   expect(nextOf(MEMO)).toEqual(['画面で確かめる', 'PR を作る'])
   expect(unverifiedOf(MEMO)).toEqual(['/clear の後'])
   expect(nextOf('# 引き継ぎ\n- 目的：a\n')).toEqual([])
+  expect(nextOf('# 引き継ぎ\n- 次：\n  1. a\n  2. b\n- 未検証：c\n')).toEqual(['a', 'b'])
 })
 
 test('棒・時間・差分の数え方', () => {
@@ -226,6 +227,32 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(seen.opened).toEqual(['handoff'])
   })
 }
+
+test('/handoff が重なっても、メモは 1 回だけ書く', async ($, on) => {
+  const seen = engine(on)
+  await begin($)
+
+  await Promise.all([$.command.run(HANDOFF), $.command.run(HANDOFF)])
+  await settle()
+
+  expect(seen.prompts.length).toBe(1)
+})
+
+test('失敗した後に閉じるを押したら、その会話では勧めない', async ($, on) => {
+  const seen = engine(on, { reply: null, tokens: 160_000 })
+  await begin($)
+  await $.command.run(HANDOFF)
+  await settle()
+
+  const ui = await $.ui.mount(PANE('terminal'))
+  await ui.press({ key: 'close' })
+  await ui.unmount()
+  await settle()
+  await $.turn.complete(TURN)
+  await settle()
+
+  expect(seen.opened).toEqual(['handoff'])
+})
 
 test('閾値より下なら勧めない', async ($, on) => {
   const seen = engine(on, { tokens: 100_000 })

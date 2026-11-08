@@ -83,7 +83,8 @@ async function write($: EngineInterface, options: Options) {
         building($, old => ({
           ...old,
           now,
-          steps: old.steps.map((step, at) => (at === 2 ? { ...step, detail: seconds(now - startedAt), ratio: Math.min(0.9, (now - startedAt) / expectedMs) } : step)),
+          // 止めた後に届いた tick で、済んだ段を戻さない
+          steps: old.steps.map((step, at) => (at === 2 && step.state === 'running' ? { ...step, detail: seconds(now - startedAt), ratio: Math.min(0.9, (now - startedAt) / expectedMs) } : step)),
         })),
       )
       .catch(() => undefined)
@@ -147,15 +148,22 @@ const start = async ($: EngineInterface, options: Options) => {
   const now = await $.clock.now()
   const last = await $.store.get(WRITE_MS_KEY)
   const fill = old.phase === 'offered' ? old.fill : await measure($)
-  await update($, handoff, (): Handoff => ({
-    phase: 'building',
-    fill,
-    facts: null,
-    steps: fresh(),
-    startedAt: now,
-    now,
-    expectedMs: typeof last === 'number' && last > 0 ? last : GUESS_MS,
-  }))
+  // 待つ間に別の start が先に書き始めていたら、こちらは書かない。update はぶつかると関数を呼び直すので、印は毎回付け直す
+  let isFirst = false
+  await update($, handoff, (current): Handoff => {
+    isFirst = current.phase !== 'building'
+    if (!isFirst) return current
+    return {
+      phase: 'building',
+      fill,
+      facts: null,
+      steps: fresh(),
+      startedAt: now,
+      now,
+      expectedMs: typeof last === 'number' && last > 0 ? last : GUESS_MS,
+    }
+  })
+  if (!isFirst) return false
   void write($, options).catch(error => failWith($, errorText(error)))
   return true
 }
@@ -258,9 +266,13 @@ export const register: Register = (on, raw) => {
             const opened = await $.process.run(['open', now.path])
             if (opened.exitCode !== 0) $.ui.toast(`handoff: 開けませんでした: ${opened.stderr.trim()}`.slice(0, 120))
           })().catch(report($, 'ファイルを開くこと')),
+        // 閉じたら、その会話では勧めない
         close: () =>
           void (async () => {
-            if (now.phase !== 'building') await reset($)
+            if (now.phase !== 'building') {
+              await update($, isLater, () => true)
+              await reset($)
+            }
             await hide($)
           })().catch(report($, '閉じること')),
       },

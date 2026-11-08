@@ -41,11 +41,21 @@ const itemsOf = (text: string, name: string) =>
     .map(line => line.match(new RegExp(`^\\s*[-*]\\s*${name}[：:]\\s*(.*)$`))?.[1]?.trim())
     .filter((item): item is string => item !== undefined && item !== '')
 
-// 「次：1. a 2. b」を [a, b] にする
-export const nextOf = (text: string) =>
-  itemsOf(text, '次')
-    .flatMap(line => line.split(/(?:^|\s)\d+[.．]\s*/))
+// 「次：1. a 2. b」を [a, b] にする。字下げして続く行も読む。session-dashboard の parseNext と同じ読み方
+export const nextOf = (text: string) => {
+  const lines = text.split('\n')
+  const at = lines.findIndex(line => /^\s*[-*]\s*次[：:]/.test(line))
+  if (at < 0) return []
+  const chunks = [lines[at]?.match(/^\s*[-*]\s*次[：:]\s*(.*)$/)?.[1] ?? '']
+  for (const line of lines.slice(at + 1)) {
+    if (!/^\s+\S/.test(line)) break
+    chunks.push(line.trim())
+  }
+  return chunks
+    .join(' ')
+    .split(/(?:^|\s)\d+[.．]\s+/)
     .map(item => item.trim())
     .filter(item => item !== '')
+}
 
 export const unverifiedOf = (text: string) => itemsOf(text, '未検証')
