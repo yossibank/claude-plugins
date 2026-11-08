@@ -4,7 +4,7 @@
 
 ## 作業の進め方
 
-確かめるコマンドと、版の上げ方は次のとおり。
+確かめるコマンドと、バージョンの上げ方は次のとおり。
 
 | 場面 | 決まり |
 | --- | --- |
@@ -14,7 +14,7 @@
 | 型の検査が NG | `plugins/<名前>/.claude-plugin/types/` は Claude Code が読み込んだ時に作る。無い時は `claude --plugin-dir plugins/<名前>` で一度読み込む |
 | 振る舞いを変える PR | `plugin.json` の `version` を上げる。上げないと `/plugin marketplace update` をしても、入れた写しが変わらない |
 | 上げない変更 | tests・README・文書だけの変更 |
-| 上げ方 | [README.md](README.md) の「版の上げ方」 |
+| 上げ方 | [docs/development.md](docs/development.md) の「バージョンの上げ方」 |
 
 ## コードの書き方
 
@@ -26,7 +26,7 @@
 
 ## プラグインの足し方
 
-足し方は [README.md](README.md) の「足し方」に従う。`tsconfig.json`、`types/`、`tests/` を置く。`version` は `0.1.0` から始める。
+足し方は [docs/development.md](docs/development.md) の「足し方」に従う。`tsconfig.json`、`types/`、`tests/` を置く。`version` は `0.1.0` から始める。
 
 ## そのほか
 
