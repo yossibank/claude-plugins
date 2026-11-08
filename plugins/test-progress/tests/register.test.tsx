@@ -57,9 +57,11 @@ test('落ちたら落ちた本数を知らせる', async ($, on) => {
 test('裏で走らせた間は、前の回の数で進みの帯を出す', async ($, on) => {
   const seen = fresh()
   seen.store.set('total:make test', 10)
-  engine(on, '', seen)
+  const clock = mock.clock(on, { now: 1_000_000 })
+  engine(on, '', seen, '/repo', 1_000_000, true)
 
   await $.tool.call({ tool: 'Bash', command: 'make test', run_in_background: true })
+  await clock.advance(1000)
 
   const ui = await $.ui.mount({
     plugin: 'test-progress',
@@ -191,24 +193,37 @@ test('ログが 5 分変わらないと、帯を消して止める', async ($, o
   expect(seen.store.get('total:make test')).toBe(10)
 })
 
-test('ログを一度も読めないまま終わったら、通ったとは言わずログが無いと知らせる', async ($, on) => {
+test('ログが一度も書かれないまま終わったら、ログを書かないコマンドとみなして何も知らせない', async ($, on) => {
   const seen = fresh()
   engine(on, PASSED_LOG, seen, '/repo', 1_000_000, false, true)
 
   await $.tool.call({ tool: 'Bash', command: 'make test' })
 
   expect(seen.reads).toEqual([])
-  expect(seen.toasts).toEqual(['⚠ make test は終わったが、ログが見つからなかった（終了コードは成功） · 0:00'])
+  expect(seen.toasts).toEqual([])
   expect(seen.store.get('total:make test')).toBeUndefined()
 })
 
-test('ログが古いまま終わった時も、通ったとは言わない', async ($, on) => {
+test('ログが古いまま終わった時も、通ったとは言わずに何も知らせない', async ($, on) => {
   const seen = fresh()
   engine(on, PASSED_LOG, seen, '/repo', 0)
 
   await $.tool.call({ tool: 'Bash', command: 'make test' })
 
-  expect(seen.toasts).toEqual(['⚠ make test は終わったが、ログが見つからなかった（終了コードは成功） · 0:00'])
+  expect(seen.toasts).toEqual([])
+})
+
+test('ログが書かれるまでは、帯を出さない', async ($, on) => {
+  const seen = fresh()
+  const clock = mock.clock(on, { now: 1_000_000 })
+  engine(on, PASSED_LOG, seen, '/repo', 1_000_000, true, true)
+
+  await $.tool.call({ tool: 'Bash', command: 'make test', run_in_background: true })
+  await clock.advance(3000)
+
+  const ui = await mountBand($)
+  expect(await ui.find({ type: 'Text', text: /🧪 make test/ })).toBeUndefined()
+  await ui.unmount()
 })
 
 test('実行を拒まれた時は、トーストを出さずに帯だけを消す', async ($, on) => {
@@ -261,9 +276,11 @@ test('落ちたテストは 3 本まで名前を出し、残りは「ほか N �
 
 test('見張りが重なっても、後の開始は前の表示と終わりを書き換えない', async ($, on) => {
   const seen = fresh()
-  engine(on, PASSED_LOG, seen)
+  const clock = mock.clock(on, { now: 1_000_000 })
+  engine(on, PASSED_LOG.replace(/.*Test Succeeded.*\n/, ''), seen, '/repo', 1_000_000, true)
 
   await $.tool.call({ tool: 'Bash', command: 'make test', run_in_background: true })
+  await clock.advance(1000)
   await $.tool.call({ tool: 'Bash', command: 'make test' })
 
   const ui = await mountBand($)
