@@ -14,6 +14,7 @@ export type Facts = {
   messages: number
   turns: number
   files: string[]
+  // 触ったファイルの、まだ commit していない差分
   added: number
   removed: number
 }
