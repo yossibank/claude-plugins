@@ -56,7 +56,7 @@ const watched = (options: Readonly<Record<string, unknown>>) => {
 
 // 見張り（走っているテストのコマンド）ごとの表示。id を鍵にして、重なった見張りが互いの表示と終わりを書き換えないようにする
 // shape の番号は、保存する値の形の版。形を変えた時に上げると、前の版の値は読まれず初めの値に戻る
-const runs = atom({ plugin: 'test-progress', key: 'runs' } as const, {}, { shape: 'runs-1' })
+const runs = atom({ plugin: 'test-progress', key: 'runs' } as const, {}, { shape: 'runs-2' })
 
 let serial = 0
 
@@ -111,7 +111,7 @@ const clock = (ms: number) => {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 }
 
-const finish = async ($: EngineInterface, id: string, isPassed: boolean, isLearnt: boolean, isUnread: boolean) => {
+const finish = async ($: EngineInterface, id: string, isPassed: boolean, isLearnt: boolean) => {
   const last = (await read($, runs))[id]
   if (last === undefined) return
   const took = last.now - last.startedAt
@@ -120,10 +120,6 @@ const finish = async ($: EngineInterface, id: string, isPassed: boolean, isLearn
     await $.store.set(`durationMs:${last.label}`, took)
   }
   await drop($, id)
-  if (isUnread) {
-    $.ui.toast(`⚠ ${last.label} は終わったが、ログが見つからなかった（終了コードは${isPassed ? '成功' : '失敗'}） · ${clock(took)}`)
-    return
-  }
   $.ui.toast(
     isPassed && last.failed.length === 0
       ? `✔ ${last.label} ${last.passed} 本通った · ${clock(took)}`
@@ -147,7 +143,7 @@ const tick = async ($: EngineInterface, id: string, spec: Watched, log: string, 
     return idle()
   }
   const counted = count(await $.fs.read(log), spec)
-  await put($, id, old => ({ ...old, now, passed: counted.passed, failed: counted.failed }))
+  await put($, id, old => ({ ...old, now, passed: counted.passed, failed: counted.failed, isWritten: true }))
   if (counted.isFinished) return counted.isSucceeded ? 'passed' : 'failed'
   return idle()
 }
@@ -167,6 +163,7 @@ const watch = async ($: EngineInterface, spec: Watched, log: string, label: stri
       failed: [],
       total: typeof total === 'number' ? total : null,
       lastMs: typeof lastMs === 'number' ? lastMs : null,
+      isWritten: false,
     },
   }))
   const pulse: Pulse = { changedAt: startedAt, mtimeMs: 0 }
@@ -176,8 +173,9 @@ const watch = async ($: EngineInterface, spec: Watched, log: string, label: stri
     if (isDone) return
     isDone = true
     timer.cancel()
-    if (result === 'given-up' || result === 'stalled') await drop($, id)
-    else await finish($, id, result === 'passed' || result === 'exited-ok' || result === 'unread-ok', result === 'passed', result.startsWith('unread-'))
+    // ログが一度も書かれなかった回は、ログを書かないコマンドとみなし、何も知らせない
+    if (result === 'given-up' || result === 'stalled' || result === 'unread') await drop($, id)
+    else await finish($, id, result === 'passed' || result === 'exited-ok', result === 'passed')
   }
   const timer = $.clock.every(POLL_MS, () => {
     if (isBusy || isDone) return
@@ -197,7 +195,7 @@ const watch = async ($: EngineInterface, spec: Watched, log: string, label: stri
     if (isDenied) return stop('given-up')
     const result = await tick($, id, spec, log, startedAt, pulse)
     const exited = isPassed ? 'ok' : 'ng'
-    await stop(result !== 'running' ? result : pulse.mtimeMs === 0 ? `unread-${exited}` : `exited-${exited}`)
+    await stop(result !== 'running' ? result : pulse.mtimeMs === 0 ? 'unread' : `exited-${exited}`)
   }
 }
 
@@ -232,8 +230,9 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const now = await $.clock.now()
     const all = Object.entries(await read($, runs))
-    const current = all.filter(([, one]) => now - one.startedAt <= GIVE_UP_MS)
-    if (current.length < all.length) await update($, runs, old => Object.fromEntries(Object.entries(old).filter(([, one]) => now - one.startedAt <= GIVE_UP_MS)))
+    const alive = all.filter(([, one]) => now - one.startedAt <= GIVE_UP_MS)
+    if (alive.length < all.length) await update($, runs, old => Object.fromEntries(Object.entries(old).filter(([, one]) => now - one.startedAt <= GIVE_UP_MS)))
+    const current = alive.filter(([, one]) => one.isWritten)
     if (e.props.hasSurvey || current.length === 0) return next(e)
 
     const { Box, Text } = $.ui.resolve(e)
