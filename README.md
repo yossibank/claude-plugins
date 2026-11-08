@@ -12,6 +12,7 @@
 | [snapshot-gallery](plugins/snapshot-gallery/README.md) | `make snapshot` で描いた PNG を、直す前と後で左右に並べて pane に出す。`/snapshots <セット>` で開き、`j` と `k` で前と次に移る |
 | [session-dashboard](plugins/session-dashboard/README.md) | モデル・バージョン・費用・リポジトリ・利用の上限・今の作業・文脈の埋まり具合を右の pane に出す。閉じている間は入力欄の上に出す |
 | [test-progress](plugins/test-progress/README.md) | テストのコマンドの間、進みの棒と落ちたテストを入力欄の上に出し、終わったらトーストで知らせる。コマンドの出力を `.build/test.log` に残しておく |
+| [handoff](plugins/handoff/README.md) | 文脈が埋まってきたら、右のペインで引き継ぎを勧める。引き継ぎメモを `.claude/handoff.md` に書き、`/clear` した新しい会話の入力欄に入れる |
 
 ## 🗺️ 全体像
 

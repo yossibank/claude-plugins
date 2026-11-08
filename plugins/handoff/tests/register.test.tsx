@@ -1,0 +1,264 @@
+import { expect, test, type TestBody } from 'claude-code/testing'
+
+import { diffOf } from '../hooks/facts'
+import { cleanMemo, nextOf, resumeOf, unverifiedOf } from '../hooks/memo'
+import { ago, bar, clock } from '../hooks/pane'
+
+declare const setTimeout: (run: (value?: unknown) => void, ms: number) => unknown
+
+type On = Parameters<TestBody>[1]
+type Self = Parameters<TestBody>[0]
+
+const MEMO = '# 引き継ぎ\n- 目的：handoff の mod を出す\n- 次：1. 画面で確かめる 2. PR を作る\n- 未検証：/clear の後\n'
+
+const PANE = (surface: 'terminal' | 'desktop') =>
+  ({
+    plugin: 'handoff',
+    component: 'Pane',
+    requestId: 'handoff',
+    surface,
+    props: { title: '🤝 Handoff', isFocused: true, bodyColumns: 50, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
+  }) as const
+
+const HANDOFF = { command: 'handoff', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } } as const
+const TURN = { answer: '', durationMs: 0, isAborted: false, turnId: 't1', reason: 'answer' } as const
+
+type Seen = { files: Map<string, string>; prompts: string[]; toasts: string[]; commands: string[]; fills: string[]; copies: string[]; opened: string[]; closed: string[] }
+
+const engine = (on: On, { reply = MEMO as string | null, failure = 'empty-reply', tokens = 100_000, files = new Map<string, string>() } = {}) => {
+  const seen: Seen = { files, prompts: [], toasts: [], commands: [], fills: [], copies: [], opened: [], closed: [] }
+  on('command.register', () => ({ value: { command: 'handoff' } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.cwd', () => ({ value: '/repo/sub' }))
+  on('process.run', (_, e) => {
+    const args = e.argv.join(' ')
+    const stdout = args.includes('--show-toplevel') ? '/repo\n' : args.includes('--show-current') ? 'feat/x\n' : args.includes('--shortstat') ? ' 2 files changed, 12 insertions(+), 3 deletions(-)\n' : ''
+    return { value: { exitCode: 0, stdout, stderr: '' } as never }
+  })
+  on('session.messages', () => ({
+    value: [
+      { role: 'user', text: 'mod を作って', toolUses: [] },
+      {
+        role: 'assistant',
+        text: '',
+        toolUses: [
+          { tool: 'Write', input: { file_path: '/repo/plugins/handoff/hooks/register.tsx' } },
+          { tool: 'Edit', input: { file_path: '/repo/plugins/handoff/hooks/register.tsx' } },
+          { tool: 'Read', input: { file_path: '/repo/README.md' } },
+        ],
+      },
+    ] as never,
+  }))
+  on('session.usage', () => ({
+    value: {
+      startedAt: 0,
+      context: { tokens, window: 1_000_000, breakdown: { rawMaxTokens: 200_000, categories: [{ name: 'System prompt', kind: 'used', tokens: 9000 }, { name: 'Messages', kind: 'used', tokens: tokens - 9000 }] } },
+    } as never,
+  }))
+  on('model.fork', (_, e) => {
+    seen.prompts.push(e.prompt)
+    return {
+      value: (reply === null
+        ? { isAnswered: false, reason: failure }
+        : { isAnswered: true, text: reply, usage: { input_tokens: 10, cache_read_input_tokens: 90, cache_creation_input_tokens: 0, output_tokens: 300 } }) as never,
+    }
+  })
+  on('clock.now', () => ({ value: 1_000_000 }))
+  on('clock.every', () => ({ value: undefined }))
+  on('store.get', () => ({ value: undefined }))
+  on('store.set', () => ({ value: undefined }))
+  on('fs.exists', (_, e) => ({ value: seen.files.has(e.path) }))
+  on('fs.stat', () => ({ value: { mtimeMs: 1_000_000 - 2 * 3600_000 } as never }))
+  on('fs.read', (_, e) => ({ value: seen.files.get(e.path) ?? '' }))
+  on('fs.write', (_, e) => {
+    seen.files.set(e.path, e.text)
+    return { value: undefined }
+  })
+  on('ui.toast', (_, e) => {
+    seen.toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.open', (_, e) => {
+    seen.opened.push(e.id)
+    return { value: { isPlaced: true } }
+  })
+  on('ui.close', (_, e) => {
+    seen.closed.push(e.id)
+    return { value: undefined } as never
+  })
+  on('command.run', (_, e) => {
+    seen.commands.push(e.command)
+    return { text: '' }
+  })
+  on('prompt.fill', (_, e) => {
+    seen.fills.push(e.text)
+    return { isFilled: true }
+  })
+  on('ui.copy', (_, e) => {
+    seen.copies.push(e.text)
+    return { value: { isCopied: true } }
+  })
+  on('turn.complete', () => ({ text: '' }))
+  return seen
+}
+
+// void で走らせた書き込みが終わるのを待つ
+const settle = () => new Promise(resolve => setTimeout(resolve, 20))
+
+const begin = async ($: Self) => {
+  await $.session.start({ cwd: '/repo/sub', surface: 'terminal', isInteractive: true })
+}
+
+test('囲みと前置きを外して、メモの本文だけにする', () => {
+  expect(cleanMemo('はい。\n```markdown\n# 引き継ぎ\n- 目的：a\n```\n')).toBe('# 引き継ぎ\n- 目的：a\n')
+  expect(cleanMemo('前置き\n# 引き継ぎ\n- 次：1. b')).toBe('# 引き継ぎ\n- 次：1. b\n')
+})
+
+test('メモから次にすることと未検証を取り出す', () => {
+  expect(nextOf(MEMO)).toEqual(['画面で確かめる', 'PR を作る'])
+  expect(unverifiedOf(MEMO)).toEqual(['/clear の後'])
+  expect(nextOf('# 引き継ぎ\n- 目的：a\n')).toEqual([])
+})
+
+test('棒・時間・差分の数え方', () => {
+  expect(bar(0.5, 4)).toEqual(['━━', '──'])
+  expect(bar(1.5, 4)).toEqual(['━━━━', ''])
+  expect(clock(75_000)).toBe('1:15')
+  expect(clock(3_725_000)).toBe('1:02:05')
+  expect(ago(30_000)).toBe('いま')
+  expect(ago(2 * 3600_000)).toBe('2 時間前')
+  expect(diffOf(' 2 files changed, 12 insertions(+), 3 deletions(-)')).toEqual({ added: 12, removed: 3 })
+  expect(diffOf(' 1 file changed, 4 deletions(-)')).toEqual({ added: 0, removed: 4 })
+})
+
+test('/handoff で、ペインを開き、触ったファイルを渡してメモを書き、.gitignore に足す', async ($, on) => {
+  const seen = engine(on, { files: new Map([['/repo/.gitignore', 'node_modules/']]) })
+  await begin($)
+
+  await $.command.run(HANDOFF)
+  await settle()
+
+  expect(seen.opened).toEqual(['handoff'])
+  expect(seen.files.get('/repo/.claude/handoff.md')).toBe(MEMO)
+  expect(seen.files.get('/repo/.gitignore')).toBe('node_modules/\n.claude/handoff.md\n')
+  expect(seen.prompts).toHaveLength(1)
+  expect(seen.prompts[0]).toContain('- plugins/handoff/hooks/register.tsx')
+  expect(seen.prompts[0]).not.toContain('README.md')
+})
+
+test('.gitignore にもうあれば、足さない', async ($, on) => {
+  const seen = engine(on, { files: new Map([['/repo/.gitignore', '.claude/handoff.md\n']]) })
+  await begin($)
+
+  await $.command.run(HANDOFF)
+  await settle()
+
+  expect(seen.files.get('/repo/.gitignore')).toBe('.claude/handoff.md\n')
+})
+
+test('20 行を超えたら、一度だけ削らせる', async ($, on) => {
+  const long = `# 引き継ぎ\n${Array.from({ length: 25 }, (_, i) => `- 決めたこと：${i}`).join('\n')}\n`
+  const seen = engine(on, { reply: long })
+  await begin($)
+
+  await $.command.run(HANDOFF)
+  await settle()
+
+  expect(seen.prompts).toHaveLength(2)
+  expect(seen.prompts[1]).toContain('26 行')
+})
+
+test('できた後の /handoff は、書き直さずにペインを開き直す', async ($, on) => {
+  const seen = engine(on)
+  await begin($)
+  await $.command.run(HANDOFF)
+  await settle()
+
+  await $.command.run(HANDOFF)
+  await settle()
+
+  expect(seen.prompts).toHaveLength(1)
+  expect(seen.opened).toEqual(['handoff', 'handoff'])
+})
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`完成したペインに数字と次にすることを出し、新しい会話で始めると /clear して入力欄にメモを入れる（${surface}）`, async ($, on) => {
+    const seen = engine(on)
+    await begin($)
+    await $.command.run(HANDOFF)
+    await settle()
+
+    const ui = await $.ui.mount(PANE(surface))
+    expect((await ui.find({ type: 'Text', text: /引き継ぎ完成/ }))?.text).toContain('引き継ぎ完成')
+    expect((await ui.find({ type: 'Text', text: /⎇ feat\/x/ }))?.text).toContain('feat/x')
+    expect((await ui.find({ type: 'Text', text: /前回/ }))?.text).toBe('前回なし')
+    expect((await ui.find({ type: 'Text', text: /^\+12 −3$/ }))?.text).toBe('+12 −3')
+    expect((await ui.find({ type: 'Text', text: /PR を作る/ }))?.text).toContain('2')
+    expect((await ui.find({ type: 'Text', text: /キャッシュ 90%/ }))?.text).toContain('出力 300')
+    await ui.press({ key: 'copy' })
+    expect(seen.copies).toEqual([resumeOf(MEMO)])
+    await ui.press({ key: 'begin' })
+    await ui.unmount()
+    await settle()
+
+    expect(seen.closed).toContain('handoff')
+    expect(seen.commands).toContain('clear')
+    expect(seen.fills).toEqual([resumeOf(MEMO)])
+  })
+
+  test(`閾値を超えたらペインを開いて勧め、あとでを押したらその会話では勧めない（${surface}）`, async ($, on) => {
+    const seen = engine(on, { tokens: 160_000 })
+    await begin($)
+
+    await $.turn.complete(TURN)
+    await settle()
+    expect(seen.opened).toEqual(['handoff'])
+    const ui = await $.ui.mount(PANE(surface))
+    expect((await ui.find({ type: 'Text', text: /引き継ぎどき/ }))?.text).toContain('引き継ぎどき')
+    expect((await ui.find({ type: 'Text', text: /^80%$/ }))?.text).toBe('80%')
+    expect((await ui.find({ type: 'Text', text: /→ 約/ }))?.text).toContain('160k → 約 10k')
+    await ui.press({ key: 'later' })
+    await ui.unmount()
+    await settle()
+
+    await $.turn.complete(TURN)
+    await settle()
+    expect(seen.opened).toEqual(['handoff'])
+  })
+}
+
+test('閾値より下なら勧めない', async ($, on) => {
+  const seen = engine(on, { tokens: 100_000 })
+  await begin($)
+
+  await $.turn.complete(TURN)
+  await settle()
+
+  expect(seen.opened).toEqual([])
+})
+
+test('まだモデルに頼んでいなければ、先に 1 つ頼むよう出す', async ($, on) => {
+  const seen = engine(on, { reply: null, failure: 'nothing-to-fork' })
+  await begin($)
+
+  await $.command.run(HANDOFF)
+  await settle()
+
+  expect(seen.toasts[0]).toContain('まだモデルに何も頼んでいない')
+  expect(seen.toasts[0]).not.toContain('答えなかった')
+})
+
+test('モデルが答えなければ、失敗を出してトーストで知らせる', async ($, on) => {
+  const seen = engine(on, { reply: null })
+  await begin($)
+
+  await $.command.run(HANDOFF)
+  await settle()
+
+  expect(seen.files.has('/repo/.claude/handoff.md')).toBe(false)
+  expect(seen.toasts[0]).toContain('empty-reply')
+  const ui = await $.ui.mount(PANE('terminal'))
+  expect((await ui.find({ type: 'Text', text: /empty-reply/ }))?.text).toContain('empty-reply')
+  expect(await ui.find({ type: 'Button', text: /やり直す/ })).toBeDefined()
+  await ui.unmount()
+})

@@ -24,6 +24,11 @@
       "name": "test-progress",
       "source": "./plugins/test-progress",
       "description": "テストのコマンドの間、進みの棒と落ちたテストを入力欄の上に出し、終わったらトーストで知らせる"
+    },
+    {
+      "name": "handoff",
+      "source": "./plugins/handoff",
+      "description": "文脈が埋まってきたら右のペインで引き継ぎを勧め、引き継ぎメモを書いて、新しい会話へ渡す"
     }
   ]
 }
