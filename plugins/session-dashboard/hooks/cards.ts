@@ -1,14 +1,12 @@
-import type { Activity, Claude, Fill, Limit, Repo, Running, TaskItem, Touched, Worker } from '../types'
+import type { Claude, Fill, Limit, Repo } from '../types'
 
-import type { Step } from './activity'
 import { card, changeSegs, keyWidthOf, valueWidth } from './card'
-import { cellWidth, gradient, twoColumns } from './cell'
+import { cellWidth, gradient } from './cell'
 import type { Seg } from './cell'
 import { LIMIT_NAMES } from './claude'
 import { heat, HEAT, ICON, TN } from './palette'
-import { duration, elapsedOf, untilReset } from './time'
+import { elapsedOf, untilReset } from './time'
 import { gradeOf, kilo, thousands } from './tokens'
-import { AGENT_TOOLS } from './tool'
 
 // 割合の列（空白 + 100%）の幅
 const PERCENT_COLUMNS = 5
@@ -16,33 +14,8 @@ const PERCENT_COLUMNS = 5
 const MIN_BAR_COLUMNS = 4
 // 使った量の列（6 桁にそろえた量 + 空白）の幅
 const AMOUNT_COLUMNS = 7
-const FILES_SHOWN = 5
-const TASKS_SHOWN = 8
 // 1 時間あたりの費用を出すまでの分数
 const RATE_MINUTES = 5
-
-const TASK_MARKS: Record<TaskItem['status'], Seg> = {
-  completed: { text: '✓', color: TN.green },
-  in_progress: { text: '●', color: TN.yellow },
-  pending: { text: '·', color: TN.comment },
-}
-
-const TASK_COLORS: Record<TaskItem['status'], string> = { completed: TN.comment, in_progress: TN.fg, pending: TN.fgDark }
-
-// 多すぎる時は、古い済みのものから落とす
-const shownTasks = (items: readonly TaskItem[]) => {
-  const dropped = new Set<TaskItem>()
-  for (const item of items) {
-    if (items.length - dropped.size <= TASKS_SHOWN) break
-    if (item.status === 'completed') dropped.add(item)
-  }
-  return items.filter(item => !dropped.has(item)).slice(-TASKS_SHOWN)
-}
-
-const stepSegs = (step: Step): Seg[] => [
-  ...(step.mark === '' ? [] : [{ text: step.mark, color: step.mark === '● ' ? TN.yellow : TN.green }]),
-  { text: step.text, color: step.color },
-]
 
 export const claudeCard = (info: Claude, inner: number) =>
   card(
@@ -116,80 +89,6 @@ export const contextCard = (measured: Fill, left: number | null, inner: number) 
   )
 }
 
-export const nextCard = (next: readonly string[], inner: number) =>
-  card(
-    [{ text: `${ICON.next} Next`, color: TN.blue, bold: true }],
-    next.map((item, index): [Seg[], Seg[]] => [[{ text: `${index + 1}`, color: TN.comment }], [{ text: item, color: TN.fg }]]),
-    inner,
-  )
-
-// サブエージェントの本数がこれを超えたら、残りは「ほか N 本」にまとめる
-const WORKERS_SHOWN = 5
-
-// 多すぎる時は、動いているものを先に、次に最近終わったものを残す
-const shownWorkers = (workers: readonly Worker[]) => {
-  if (workers.length <= WORKERS_SHOWN) return [...workers]
-  const running = workers.filter(worker => worker.status === 'running')
-  const ended = workers.filter(worker => worker.status !== 'running').sort((x, y) => (y.endedAt ?? 0) - (x.endedAt ?? 0))
-  return [...running, ...ended].slice(0, WORKERS_SHOWN).sort((x, y) => x.startedAt - y.startedAt)
-}
-
-const WORKER_MARKS: Record<Worker['status'], Seg> = {
-  running: { text: '', color: TN.comment },
-  done: { text: '✓ ', color: TN.green },
-  failed: { text: '✗ ', color: TN.red },
-}
-
-// 木の 1 本分。2 行目は動いているツールと、ツールの回数
-const workerRows = (worker: Worker, now: number, isLast: boolean, width: number): [Seg[], Seg[]][] => {
-  const branch = isLast ? '└ ' : '├ '
-  const mark = WORKER_MARKS[worker.status]
-  const left: Seg[] = [{ text: branch, color: TN.line }, { text: worker.type === '' ? 'agent' : worker.type, color: TN.cyan }, { text: `  ${worker.title}`, color: TN.fg }]
-  const right: Seg[] = [...(mark.text === '' ? [] : [mark]), { text: duration((worker.endedAt ?? now) - worker.startedAt), color: TN.comment }]
-  const rows: [Seg[], Seg[]][] = [[[], twoColumns(left, right, width)]]
-  if (worker.status !== 'running' || worker.last === null) return rows
-  const active = worker.active.at(-1)
-  const step: Seg[] =
-    active === undefined
-      ? [{ text: '✓ ', color: TN.green }, { text: worker.last, color: TN.comment }]
-      : [{ text: '● ', color: TN.yellow }, { text: `${active.tool} · ${Math.max(0, Math.floor((now - active.startedAt) / 1000))}s`, color: TN.fg }]
-  rows.push([[], twoColumns([{ text: isLast ? '    ' : '│   ', color: TN.line }, ...step], [{ text: `ツール ${worker.calls}`, color: TN.comment }], width)])
-  return rows
-}
-
-// メインで重なって動いているツール。サブエージェントを起こすものは、サブエージェントの側に出す
-const callRow = (call: Running, now: number, isLast: boolean, width: number): [Seg[], Seg[]] => [
-  [],
-  twoColumns([{ text: isLast ? '└ ' : '├ ', color: TN.line }, { text: '● ', color: TN.yellow }, { text: call.tool, color: TN.fg }], [{ text: duration(now - call.startedAt), color: TN.comment }], width),
-]
-
-// 重なって動くツールをまとめた 1 行。同じ名前なら Agent ×3
-const groupStep = (calls: readonly Running[], now: number): Step => {
-  const name = calls.every(call => call.name === calls[0]?.name) ? (calls[0]?.name ?? '') : '並行'
-  const oldest = Math.min(...calls.map(call => call.startedAt))
-  return { mark: '● ', text: `${name} ×${calls.length} · ${duration(now - oldest)}`, color: TN.fg }
-}
-
-export const nowCard = (doing: Activity, step: Step | null, calls: readonly Running[], workers: readonly Worker[], now: number, inner: number) => {
-  const summary = doing.task ?? doing.said
-  const rows: [Seg[], Seg[]][] = [[[{ text: '作業', color: TN.comment }], [{ text: summary ?? '待っています', color: doing.isWorking ? TN.fg : TN.comment }]]]
-  const shownStep = doing.isWorking && calls.length >= 2 ? groupStep(calls, now) : step
-  if (doing.isWorking && shownStep !== null) rows.push([[{ text: '実行', color: TN.comment }], stepSegs(shownStep)])
-  else if (!doing.isWorking && (summary !== null || workers.length > 0)) rows.push([[{ text: '状態', color: TN.comment }], [{ text: '待っています', color: TN.comment }]])
-
-  const width = valueWidth(inner, keyWidthOf(rows))
-  const crew = shownWorkers(workers)
-  const hidden = workers.length - crew.length
-  const others = doing.isWorking && calls.length >= 2 ? calls.filter(call => !AGENT_TOOLS.has(call.name)) : []
-  const count = crew.length + others.length + (hidden > 0 ? 1 : 0)
-  let at = 0
-  const isLast = () => (at += 1) === count
-  for (const worker of crew) rows.push(...workerRows(worker, now, isLast(), width))
-  for (const call of others) rows.push(callRow(call, now, isLast(), width))
-  if (hidden > 0) rows.push([[], twoColumns([{ text: '└ ', color: TN.line }, { text: `ほか ${hidden} 本`, color: TN.comment }], [], width)])
-  return card([{ text: `${ICON.now} Now`, color: TN.yellow, bold: true }], rows, inner)
-}
-
 export const sessionCard = (ms: number, turns: number, calls: number, spent: number | null, inner: number) => {
   const rate = spent === null || ms < RATE_MINUTES * 60_000 ? '—' : `$${(spent / (ms / 3_600_000)).toFixed(2)}/h`
   return card(
@@ -201,28 +100,3 @@ export const sessionCard = (ms: number, turns: number, calls: number, spent: num
     inner,
   )
 }
-
-export const tasksCard = (list: readonly TaskItem[], inner: number) => {
-  const finished = list.filter(item => item.status === 'completed').length
-  const shown = shownTasks(list)
-  return card(
-    [{ text: `${ICON.tasks} Tasks ${finished}/${list.length}`, color: TN.green, bold: true }],
-    shown.map((item): [Seg[], Seg[]] => [[TASK_MARKS[item.status]], [{ text: item.subject, color: TASK_COLORS[item.status] }]]),
-    inner,
-    shown.length < list.length ? [{ text: `+${list.length - shown.length}`, color: TN.comment }] : undefined,
-  )
-}
-
-export const filesCard = (touched: readonly Touched[], inner: number) =>
-  card(
-    [{ text: `${ICON.files} Files`, color: TN.orange, bold: true }],
-    touched.slice(0, FILES_SHOWN).map((item): [Seg[], Seg[]] => {
-      const parts = item.path.split('/')
-      const folder = parts.at(-2)
-      return [
-        [{ text: `×${item.count}`, color: TN.comment }],
-        [{ text: parts.at(-1) ?? item.path, color: TN.fg }, ...(folder === undefined || folder === '' ? [] : [{ text: ` ${folder}`, color: TN.comment }])],
-      ]
-    }),
-    inner,
-  )

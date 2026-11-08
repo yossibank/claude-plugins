@@ -3,8 +3,6 @@ import type { EngineInterface } from 'claude-code'
 
 import type { Config } from './config'
 import { PANE } from './config'
-import { resetFiles } from './files'
-import { loadUpcoming } from './handoff'
 import { resetStats } from './stats'
 import { measure } from './tokens'
 
@@ -13,17 +11,15 @@ const sessionStart = atom({ plugin: 'session-dashboard', key: 'sessionStart' } a
 const tick = atom({ plugin: 'session-dashboard', key: 'tick' } as const, 0)
 const isPaneShown = atom({ plugin: 'session-dashboard', key: 'isPaneShown' } as const, false)
 
-async function begin($: EngineInterface, config: Config) {
+async function begin($: EngineInterface) {
   const now = await $.clock.now()
   await update($, sessionStart, () => now)
   await update($, lastTurnEnd, () => null)
   await resetStats($)
-  await resetFiles($)
-  await loadUpcoming($, config)
 }
 
-export async function restart($: EngineInterface, config: Config) {
-  await begin($, config)
+export async function restart($: EngineInterface) {
+  await begin($)
   await measure($)
 }
 

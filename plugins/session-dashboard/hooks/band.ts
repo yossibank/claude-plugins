@@ -1,24 +1,10 @@
-import type { Activity, Claude, Fill, Repo } from '../types'
+import type { Claude, Fill, Repo } from '../types'
 
-import type { Step } from './activity'
 import { changeSegs } from './card'
 import { fitSegs, segWidth } from './cell'
 import type { Seg } from './cell'
 import { LIMIT_NAMES } from './claude'
 import { heat, ICON, MOON } from './palette'
-
-// 作業中の 1 行。作業も実行も無ければ空
-export const workingLine = (doing: Activity, step: Step | null, width: number): Seg[] => {
-  const summary = doing.task ?? doing.said
-  const working: Seg[] = []
-  if (doing.isWorking && (summary !== null || step !== null)) {
-    working.push({ text: '● ', color: MOON.yellow })
-    if (summary !== null) working.push({ text: summary, color: MOON.fg })
-    if (summary !== null && step !== null) working.push({ text: ' │ ', color: MOON.comment })
-    if (step !== null) working.push({ text: step.mark, color: step.mark === '● ' ? MOON.yellow : MOON.green }, { text: step.text, color: MOON.comment })
-  }
-  return fitSegs(working, width)
-}
 
 // │ で区切ったセルを並べた 1 行。枝は、幅に収まるように最後に縮める
 export const statusLine = (info: Claude | null, git: Repo | null, measured: Fill, left: number | null, width: number): Seg[] => {

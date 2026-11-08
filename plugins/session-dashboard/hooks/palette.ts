@@ -36,11 +36,7 @@ export const ICON = {
   limit: '\u{F029A}',
   context: '\u{F09D1}',
   cache: '\u{F01BC}',
-  next: '\uf04e',
-  now: '\u{F140B}',
   session: '\uf017',
-  tasks: '\uf046',
-  files: '\uf040',
 }
 
 const rgbOf = (hex: string) => [1, 3, 5].map(at => parseInt(hex.slice(at, at + 2), 16))
