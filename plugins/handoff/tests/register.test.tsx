@@ -23,20 +23,29 @@ const PANE = (surface: 'terminal' | 'desktop') =>
 const HANDOFF = { command: 'handoff', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } } as const
 const TURN = { answer: '', durationMs: 0, isAborted: false, turnId: 't1', reason: 'answer' } as const
 
-type Seen = { files: Map<string, string>; prompts: string[]; toasts: string[]; commands: string[]; fills: string[]; copies: string[]; opened: string[]; closed: string[] }
+type Seen = { files: Map<string, string>; runs: string[]; prompts: string[]; toasts: string[]; commands: string[]; fills: string[]; copies: string[]; opened: string[]; closed: string[] }
 
-const engine = (on: On, { reply = MEMO as string | null, failure = 'empty-reply', tokens = 100_000, files = new Map<string, string>() } = {}) => {
-  const seen: Seen = { files, prompts: [], toasts: [], commands: [], fills: [], copies: [], opened: [], closed: [] }
+const engine = (on: On, { reply = MEMO as string | null, failure = 'empty-reply', tokens = 100_000, files = new Map<string, string>(), untracked = '', messages = null as unknown[] | null } = {}) => {
+  const seen: Seen = { files, runs: [], prompts: [], toasts: [], commands: [], fills: [], copies: [], opened: [], closed: [] }
   on('command.register', () => ({ value: { command: 'handoff' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: '/repo/sub' }))
   on('process.run', (_, e) => {
     const args = e.argv.join(' ')
-    const stdout = args.includes('--show-toplevel') ? '/repo\n' : args.includes('--show-current') ? 'feat/x\n' : args.includes('--shortstat') ? ' 2 files changed, 12 insertions(+), 3 deletions(-)\n' : ''
+    seen.runs.push(args)
+    const stdout = args.includes('--show-toplevel')
+      ? '/repo\n'
+      : args.includes('--show-current')
+        ? 'feat/x\n'
+        : args.includes('--shortstat')
+          ? ' 2 files changed, 12 insertions(+), 3 deletions(-)\n'
+          : args.includes('ls-files')
+            ? untracked
+            : ''
     return { value: { exitCode: 0, stdout, stderr: '' } as never }
   })
   on('session.messages', () => ({
-    value: [
+    value: (messages ?? [
       { role: 'user', text: 'mod を作って', toolUses: [] },
       {
         role: 'assistant',
@@ -47,7 +56,7 @@ const engine = (on: On, { reply = MEMO as string | null, failure = 'empty-reply'
           { tool: 'Read', input: { file_path: '/repo/README.md' } },
         ],
       },
-    ] as never,
+    ]) as never,
   }))
   on('session.usage', () => ({
     value: {
@@ -145,6 +154,32 @@ test('/handoff で、ペインを開き、触ったファイルを渡してメ�
   expect(seen.prompts).toHaveLength(1)
   expect(seen.prompts[0]).toContain('- plugins/handoff/hooks/register.tsx')
   expect(seen.prompts[0]).not.toContain('README.md')
+})
+
+test('ファイルの差分は、触ったファイルだけで数え、未追跡のファイルは行の数を足す', async ($, on) => {
+  const seen = engine(on, { untracked: 'plugins/handoff/hooks/register.tsx\n', files: new Map([['/repo/plugins/handoff/hooks/register.tsx', 'a\nb\nc\n']]) })
+  await begin($)
+
+  await $.command.run(HANDOFF)
+  await settle()
+
+  expect(seen.runs).toContain('git diff --shortstat HEAD -- plugins/handoff/hooks/register.tsx')
+  const ui = await $.ui.mount(PANE('terminal'))
+  expect((await ui.find({ type: 'Text', text: /^\+\d+ −\d+$/ }))?.text).toBe('+15 −3')
+  await ui.unmount()
+})
+
+test('触ったファイルが無ければ、ほかの変更があっても差分は 0 にする', async ($, on) => {
+  const seen = engine(on, { tokens: 160_000, messages: [{ role: 'user', text: 'README を読んで', toolUses: [] }] })
+  await begin($)
+
+  await $.turn.complete(TURN)
+  await settle()
+
+  expect(seen.runs.some(run => run.includes('--shortstat'))).toBe(false)
+  const ui = await $.ui.mount(PANE('terminal'))
+  expect((await ui.find({ type: 'Text', text: /^\+\d+ −\d+$/ }))?.text).toBe('+0 −0')
+  await ui.unmount()
 })
 
 test('.gitignore にもうあれば、足さない', async ($, on) => {

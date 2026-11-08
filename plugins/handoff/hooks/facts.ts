@@ -2,6 +2,8 @@ import type { EngineInterface, SessionMessage } from 'claude-code'
 
 import type { Facts, Fill } from '../types'
 
+import { lineCount } from './memo'
+
 const EDIT_TOOLS = ['Edit', 'MultiEdit', 'Write', 'NotebookEdit']
 
 export type Root = { base: string; isRepo: boolean }
@@ -62,11 +64,29 @@ export const diffOf = (shortstat: string) => ({
   removed: Number(shortstat.match(/(\d+) deletion/)?.[1] ?? 0),
 })
 
+// 触ったファイルのうち、リポジトリの中にあるものの、まだ commit していない差分。未追跡のファイルは、行の数を足した行とする
+async function touchedDiffOf($: EngineInterface, root: Root, files: string[]) {
+  const inside = files.filter(file => !file.startsWith('/'))
+  if (!root.isRepo || inside.length === 0) return { added: 0, removed: 0 }
+  const tracked = diffOf(await git($, root.base, ['diff', '--shortstat', 'HEAD', '--', ...inside]))
+  const untracked = (await git($, root.base, ['ls-files', '--others', '--exclude-standard', '--', ...inside])).split('\n').filter(file => file !== '')
+  const lines = await Promise.all(
+    untracked.map(file =>
+      $.fs
+        .read(`${root.base}/${file}`)
+        .then(text => (text.trim() === '' ? 0 : lineCount(text)))
+        .catch(() => 0),
+    ),
+  )
+  return { added: tracked.added + lines.reduce((sum, count) => sum + count, 0), removed: tracked.removed }
+}
+
 export async function gather($: EngineInterface, root: Root, path: string, messages: Messages): Promise<Facts> {
   const usage = await $.session.usage().catch(() => undefined)
   const previous = (await $.fs.exists(path)) ? await $.fs.stat(path).catch(() => undefined) : undefined
   const branch = root.isRepo ? await git($, root.base, ['branch', '--show-current']) : ''
-  const diff = root.isRepo ? diffOf(await git($, root.base, ['diff', '--shortstat', 'HEAD'])) : { added: 0, removed: 0 }
+  const files = filesOf(messages, root.base)
+  const diff = await touchedDiffOf($, root, files)
   return {
     repo: root.base.split('/').pop() ?? root.base,
     branch,
@@ -74,7 +94,7 @@ export async function gather($: EngineInterface, root: Root, path: string, messa
     sessionStartedAt: usage?.startedAt ?? 0,
     messages: messages.length,
     turns: messages.filter(message => message.role === 'user' && message.text.trim() !== '').length,
-    files: filesOf(messages, root.base),
+    files,
     ...diff,
   }
 }
