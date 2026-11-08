@@ -27,68 +27,30 @@ flowchart LR
 
 ## 💻 実行環境
 
-| 道具 | 版 | 使う所 |
+| 道具 | バージョン | 使う所 |
 | --- | --- | --- |
 | Claude Code | 2.1.319 | プラグインの実行、`claude plugin validate`、`claude plugin test` |
 | TypeScript | 5.4 以上 | `make types` での型の検査 |
-| jq | | `make verify` の version と description の検査 |
-| terminal-browser | | pr-browser |
-| macOS | | snapshot-gallery の `shasum`・`sips`・`open` |
+| jq | 最新 | `make verify` の version と description の検査 |
+| terminal-browser | 最新 | pr-browser |
+| macOS | — | snapshot-gallery の `shasum`・`sips`・`open` |
 
 ## 🚀 入れ方
 
-1. マーケットプレイスを足す。
+```sh
+/plugin marketplace add yossibank/claude-plugins
+/plugin install <プラグイン>@yossibank
+/reload-plugins
+```
 
-   ```sh
-   /plugin marketplace add yossibank/claude-plugins
-   ```
-
-2. プラグインを入れて、読み込む。
-
-   ```sh
-   /plugin install <プラグイン>@yossibank
-   /reload-plugins
-   ```
-
-   context-gauge を入れていた時は、`/plugin uninstall context-gauge@yossibank` で外してから session-dashboard を入れる。
-   session-dash を入れていた時は、`/plugin uninstall session-dash@yossibank` で外してから session-dashboard を入れる。
-
-3. pr-browser を使う時は、terminal-browser を入れる。
-
-   ```sh
-   brew install terminal-browser
-   ```
+| プラグイン | 先に入れるもの |
+| --- | --- |
+| pr-browser | `brew install terminal-browser` |
 
 ## 📚 文書
 
-| 知りたいこと | 文書 |
-| --- | --- |
-| 全リポジトリ共通の決まり | [claude-config](https://github.com/yossibank/claude-config) |
-| 作業の進め方 | [CLAUDE.md](CLAUDE.md) |
-
-## 🛠️ 足し方
-
-1. `plugins/<名前>/` に、`.claude-plugin/plugin.json`・`hooks/`・`tests/` を置く。
-2. `plugin.json` の `version` は `0.1.0` にする。
-3. `tsconfig.json` を置く。中身は、ほかのプラグインと同じ `extends` の 1 行にする。
-4. `claude --plugin-dir plugins/<名前>` で読み込む。`.claude-plugin/types/` ができる。git には入れない。
-5. 状態の型は `types/index.d.ts` に書き、`plugin.json` の `types` で指す。
-6. `.claude-plugin/marketplace.json` の `plugins` に足す。`description` は `plugin.json` と同じにする。
-7. プラグインの README を置き、機能の表に行を足す。
-8. `make verify` と `make test` で確かめる。`tsc` があれば `make types` も通す。
-
-```json
-{ "extends": "./.claude-plugin/types/tsconfig.json" }
-```
-
-## 📏 版の上げ方
-
-| 変えたもの | `plugin.json` の `version` で上げる所 | 例 |
+| 文書 | 読む時 | 中身 |
 | --- | --- | --- |
-| 設定の名前を消す・替える、前の動きが残らない変更 | 2 つ目 | `0.1.0` → `0.2.0` |
-| 機能を足す、不具合を直す | 3 つ目 | `0.1.0` → `0.1.1` |
-| 文書・テストだけ | 上げない | |
-
-1. `plugin.json` の `version` を上げて、PR をマージする。
-2. `/plugin marketplace update yossibank` で、マーケットプレイスを更新する。
-3. `/reload-plugins` で、読み込み直す。
+| [docs/development.md](docs/development.md) | プラグインを足す・バージョンを上げる時 | 置くファイル、足し方、バージョンの上げ方 |
+| [CLAUDE.md](CLAUDE.md) | 作業する時 | 確認のコマンド、コードの書き方 |
+| [claude-config](https://github.com/yossibank/claude-config) | 全リポジトリの決まりを知る時 | 共通の決まり |
