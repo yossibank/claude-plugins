@@ -163,7 +163,8 @@ test('ファイルの差分は、触ったファイルだけで数え、未追�
   await $.command.run(HANDOFF)
   await settle()
 
-  expect(seen.runs).toContain('git diff --shortstat HEAD -- plugins/handoff/hooks/register.tsx')
+  expect(seen.runs).toContain('git --literal-pathspecs diff --shortstat HEAD -- plugins/handoff/hooks/register.tsx')
+  expect(seen.runs).toContain('git --literal-pathspecs ls-files --others --exclude-standard -- plugins/handoff/hooks/register.tsx')
   const ui = await $.ui.mount(PANE('terminal'))
   expect((await ui.find({ type: 'Text', text: /^\+\d+ −\d+$/ }))?.text).toBe('+15 −3')
   await ui.unmount()

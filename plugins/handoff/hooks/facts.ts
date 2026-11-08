@@ -68,8 +68,9 @@ export const diffOf = (shortstat: string) => ({
 async function touchedDiffOf($: EngineInterface, root: Root, files: string[]) {
   const inside = files.filter(file => !file.startsWith('/'))
   if (!root.isRepo || inside.length === 0) return { added: 0, removed: 0 }
-  const tracked = diffOf(await git($, root.base, ['diff', '--shortstat', 'HEAD', '--', ...inside]))
-  const untracked = (await git($, root.base, ['ls-files', '--others', '--exclude-standard', '--', ...inside])).split('\n').filter(file => file !== '')
+  // [id] や * を含む名前を glob と読ませない
+  const tracked = diffOf(await git($, root.base, ['--literal-pathspecs', 'diff', '--shortstat', 'HEAD', '--', ...inside]))
+  const untracked = (await git($, root.base, ['--literal-pathspecs', 'ls-files', '--others', '--exclude-standard', '--', ...inside])).split('\n').filter(file => file !== '')
   const lines = await Promise.all(
     untracked.map(file =>
       $.fs
