@@ -29,6 +29,11 @@
       "name": "handoff",
       "source": "./plugins/handoff",
       "description": "文脈が埋まってきたら右のペインで引き継ぎを勧め、引き継ぎメモを書いて、新しい会話へ渡す"
+    },
+    {
+      "name": "agent-progress",
+      "source": "./plugins/agent-progress",
+      "description": "メインとサブエージェントが今していることを、動く Claude のアイコン付きのカードで右の pane に出す。作業の一覧の進みも出す"
     }
   ]
 }

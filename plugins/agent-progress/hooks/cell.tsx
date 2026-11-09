@@ -1,0 +1,112 @@
+import type { EngineInterface } from 'claude-code'
+
+import { blend } from './palette'
+
+const WIDE: [number, number][] = [
+  [0x1100, 0x115f],
+  [0x26a1, 0x26a1],
+  [0x2e80, 0xa4cf],
+  [0xac00, 0xd7a3],
+  [0xf900, 0xfaff],
+  [0xfe30, 0xfe4f],
+  [0xff00, 0xff60],
+  [0xffe0, 0xffe6],
+  [0x1f300, 0x1faff],
+  [0x20000, 0x3fffd],
+]
+
+export const cellWidth = (text: string) =>
+  [...text].reduce((sum, char) => {
+    const code = char.codePointAt(0) ?? 0
+    return sum + (WIDE.some(([from, to]) => code >= from && code <= to) ? 2 : 1)
+  }, 0)
+
+// 幅に収まらなければ末尾を … にする
+const fit = (text: string, width: number) => {
+  if (cellWidth(text) <= width) return text
+  let out = ''
+  for (const char of text) {
+    if (cellWidth(out + char) > width - 1) break
+    out += char
+  }
+  return `${out}…`
+}
+
+export type Seg = { text: string; color?: string; bold?: boolean }
+
+export const segWidth = (segs: readonly Seg[]) => segs.reduce((sum, seg) => sum + cellWidth(seg.text), 0)
+
+// 幅に収まらなければ、はみ出す所から … にする
+export const fitSegs = (segs: readonly Seg[], width: number): Seg[] => {
+  if (segWidth(segs) <= width) return [...segs]
+  const out: Seg[] = []
+  let used = 0
+  for (const seg of segs) {
+    const cells = cellWidth(seg.text)
+    if (used + cells < width) {
+      out.push(seg)
+      used += cells
+      continue
+    }
+    // ちょうど収まっても後ろが切れるので、… で終える
+    out.push({ ...seg, text: fit(`${seg.text} `, width - used) })
+    break
+  }
+  return out
+}
+
+export const padSegs = (segs: readonly Seg[], width: number): Seg[] => {
+  const fitted = fitSegs(segs, width)
+  return [...fitted, { text: ' '.repeat(Math.max(0, width - segWidth(fitted))) }]
+}
+
+// 幅で折り返して、切らずにすべて出す。色と太字は文字ごとに引き継ぐ
+export const wrapSegs = (segs: readonly Seg[], width: number): Seg[][] => {
+  const lines: Seg[][] = [[]]
+  let used = 0
+  for (const seg of segs) {
+    for (const char of seg.text) {
+      const cells = cellWidth(char)
+      if (used + cells > width && used > 0) {
+        lines.push([])
+        used = 0
+      }
+      const line = lines.at(-1)!
+      const last = line.at(-1)
+      if (last !== undefined && last.color === seg.color && last.bold === seg.bold) last.text += char
+      else line.push({ ...seg, text: char })
+      used += cells
+    }
+  }
+  return lines.filter(line => line.length > 0)
+}
+
+// 左の列に収まる最小の幅。右の列を足すと、これを割る時は右の列を落とす
+const MIN_LEFT_COLUMNS = 12
+
+// 左の列と、右に寄せる列を 1 行に並べる。狭ければ右の列から落とす
+export const twoColumns = (left: readonly Seg[], right: readonly Seg[], width: number): Seg[] => {
+  const room = width - segWidth(right) - 1
+  if (right.length === 0 || room < MIN_LEFT_COLUMNS) return fitSegs(left, width)
+  const fitted = fitSegs(left, room)
+  return [...fitted, { text: ' '.repeat(width - segWidth(fitted) - segWidth(right)) }, ...right]
+}
+
+type TextElement = ReturnType<EngineInterface['ui']['resolve']>['Text']
+
+export const draw = (Text: TextElement, segs: readonly Seg[], key: string) => (
+  <Text key={key}>
+    {segs.map((seg, index) => (
+      <Text key={String(index)} {...(seg.color === undefined ? {} : { color: seg.color })} {...(seg.bold === true ? { bold: true } : {})}>
+        {seg.text}
+      </Text>
+    ))}
+  </Text>
+)
+
+// 1 マスずつ色が移る棒
+export const gradient = (ratio: number, columns: number, stops: readonly string[], track: string, full = '━', empty = '━'): Seg[] => {
+  const filled = Math.max(0, Math.min(columns, Math.round(ratio * columns)))
+  const cells: Seg[] = Array.from({ length: filled }, (_, index) => ({ text: full, color: blend(stops, index / Math.max(1, columns - 1)) }))
+  return filled === columns ? cells : [...cells, { text: empty.repeat(columns - filled), color: track }]
+}
