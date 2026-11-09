@@ -58,8 +58,6 @@
 | 触ったファイル | パスだけ |
 | 未検証 | 確かめていないこと |
 
-[session-dashboard](../session-dashboard/README.md) の Next は、このメモの `次：` を読む。
-
 ## 🔧 設定
 
 | 名前 | 中身 |

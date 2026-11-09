@@ -41,7 +41,7 @@ const itemsOf = (text: string, name: string) =>
     .map(line => line.match(new RegExp(`^\\s*[-*]\\s*${name}[：:]\\s*(.*)$`))?.[1]?.trim())
     .filter((item): item is string => item !== undefined && item !== '')
 
-// 「次：1. a 2. b」を [a, b] にする。字下げして続く行も読む。session-dashboard の parseNext と同じ読み方
+// 「次：1. a 2. b」を [a, b] にする。字下げして続く行も読む
 export const nextOf = (text: string) => {
   const lines = text.split('\n')
   const at = lines.findIndex(line => /^\s*[-*]\s*次[：:]/.test(line))
