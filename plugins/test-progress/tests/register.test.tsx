@@ -329,3 +329,29 @@ test('session.start で、残っていた見張りの行を消す', async ($, on
   expect(await ui.find({ type: 'Text', text: /🧪 make test/ })).toBeUndefined()
   await ui.unmount()
 })
+
+test('前の処理が長くてログが書かれる前に 5 分たっても、見張りを続ける', async ($, on) => {
+  const seen = fresh()
+  const clock = mock.clock(on, { now: 1_000_000 })
+  let mtime = 0
+  engine(on, '✔ a() (0.1 seconds)\n', seen, '/repo', () => mtime, true)
+
+  await $.tool.call({ tool: 'Bash', command: 'make verify && make test', run_in_background: true })
+  await clock.advance(6 * 60_000)
+  mtime = 1_000_000 + 6 * 60_000
+  await clock.advance(2000)
+
+  const ui = await mountBand($)
+  expect(await ui.find({ type: 'Text', text: /🧪 make test/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('run-check.sh の最初の引数のワークツリーを基点にする', async ($, on) => {
+  const seen = fresh()
+  engine(on, PASSED_LOG, seen)
+
+  await $.tool.call({ tool: 'Bash', command: '/s/run-check.sh /wt/a "make test" make test' })
+  await $.tool.call({ tool: 'Bash', command: 'cd /wt/b && /s/run-check.sh $PWD "make test" make test' })
+
+  expect(seen.reads).toEqual(['/wt/a/.build/test.log', '/wt/b/.build/test.log'])
+})

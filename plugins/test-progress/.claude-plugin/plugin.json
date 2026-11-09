@@ -1,6 +1,6 @@
 {
   "name": "test-progress",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "テストのコマンドの間、進みの棒と落ちたテストを入力欄の上に出し、終わったらトーストで知らせる",
   "types": "./types/index.d.ts",
   "userConfig": {

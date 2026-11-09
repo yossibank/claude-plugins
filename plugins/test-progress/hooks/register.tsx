@@ -82,11 +82,13 @@ const testLog = (command: string, cwd: string, spec: Watched) => {
       if (next !== '' && next !== '-' && !next.startsWith('~') && !next.startsWith('$')) base = place(base, next)
       continue
     }
+    const checked = /(^|\/)run-check\.sh$/.test(words[0] ?? '') ? (words[1] ?? '').replace(/^['"]|['"]$/g, '') : ''
+    const root = checked !== '' && !checked.startsWith('~') && !checked.startsWith('$') ? place(base, checked) : base
     const isMake = /\bmake\b/.test(segment)
     const hit = (isMake ? segment.replace(/\s-C\s*\S+/g, '') : segment).match(spec.command)
     if (hit === null) continue
     const into = isMake ? segment.match(/\s-C\s*(\S+)/)?.[1] : undefined
-    const dir = into === undefined ? base : place(base, into.replace(/^['"]|['"]$/g, ''))
+    const dir = into === undefined ? root : place(root, into.replace(/^['"]|['"]$/g, ''))
     return { log: place(dir, spec.logPath), label: hit[0].trim() || segment.trim() }
   }
   return undefined
@@ -137,7 +139,8 @@ const tick = async ($: EngineInterface, id: string, spec: Watched, log: string, 
     pulse.mtimeMs = mtimeMs
     pulse.changedAt = now
   }
-  const idle = () => (now - pulse.changedAt > STALL_MS ? 'stalled' : now - startedAt > GIVE_UP_MS ? 'given-up' : 'running')
+  const isStalled = pulse.mtimeMs !== 0 && now - pulse.changedAt > STALL_MS
+  const idle = () => (isStalled ? 'stalled' : now - startedAt > GIVE_UP_MS ? 'given-up' : 'running')
   if (!isFresh) {
     await put($, id, old => ({ ...old, now }))
     return idle()
