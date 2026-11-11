@@ -99,6 +99,19 @@ test('k で次の場合に移る', async ($, on) => {
   await ui.unmount()
 })
 
+test('Finder で開けなかったら、toast で知らせる', async ($, on) => {
+  const toasts: string[] = []
+  engine(on, [], { exit: { open: 1 }, toasts })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'finder' })
+  await new Promise(resolve => setTimeout(resolve, 0))
+  expect(toasts).toContain('snapshot-gallery: Finder で開くことに失敗しました: boom')
+  await ui.unmount()
+})
+
 test('前と後を pane の高さに収める', async ($, on) => {
   engine(on, [])
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })

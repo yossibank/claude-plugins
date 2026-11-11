@@ -51,8 +51,14 @@ const failWith = async ($: EngineInterface, reason: string) => {
   $.ui.toast(`handoff: 引き継ぎを作れませんでした: ${reason}`.slice(0, 120))
 }
 
+// 同じ失敗は続けて知らせない。経過の tick のように繰り返す処理でも、toast を重ねない
+let lastFailure = ''
+
 const report = ($: EngineInterface, what: string) => (error: unknown) => {
-  $.ui.toast(`handoff: ${what}に失敗しました: ${errorText(error)}`.slice(0, 120))
+  const text = `handoff: ${what}に失敗しました: ${errorText(error)}`.slice(0, 120)
+  if (text === lastFailure) return
+  lastFailure = text
+  $.ui.toast(text)
 }
 
 // 段を 1 つ進め、かかった時間を段の補足にする
@@ -87,7 +93,7 @@ async function write($: EngineInterface, options: Options) {
           steps: old.steps.map((step, at) => (at === 2 && step.state === 'running' ? { ...step, detail: seconds(now - startedAt), ratio: Math.min(0.9, (now - startedAt) / expectedMs) } : step)),
         })),
       )
-      .catch(() => undefined)
+      .catch(report($, '経過の更新'))
   })
   let text: string
   let cost: Cost | null = null

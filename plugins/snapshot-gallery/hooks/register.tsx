@@ -97,6 +97,11 @@ const isSetName = (set: string) => /^[\w-][\w.-]*$/.test(set) && !set.includes('
 
 const fail = (what: string, stderr: string) => `snapshot-gallery: ${what}に失敗しました: ${stderr.trim().slice(0, 80)}`
 
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+// 捨てる処理の失敗を toast で知らせる。.catch に渡す
+const report = ($: EngineInterface, what: string) => (error: unknown) => $.ui.toast(fail(what, errorText(error)))
+
 // 終了コードが 0 でなければ toast で知らせて false を返す。起動できなかった時も同じ
 const succeeded = async ($: EngineInterface, argv: string[], what: string) => {
   try {
@@ -104,7 +109,7 @@ const succeeded = async ($: EngineInterface, argv: string[], what: string) => {
     if (exitCode === 0) return true
     $.ui.toast(fail(what, stderr))
   } catch (error) {
-    $.ui.toast(fail(what, error instanceof Error ? error.message : String(error)))
+    $.ui.toast(fail(what, errorText(error)))
   }
   return false
 }
@@ -284,7 +289,7 @@ export const register: Register = (on, options) => {
     const drawn = await collect($, base, set, dirs)
     if (drawn.cases.length > 0) {
       await update($, gallery, () => drawn)
-      void open($).catch(error => $.ui.toast(fail('画廊の表示', error instanceof Error ? error.message : String(error))))
+      void open($).catch(report($, '画廊の表示'))
     }
     return ran
   })
@@ -374,13 +379,13 @@ export const register: Register = (on, options) => {
         </Box>
         <Text> </Text>
         <Box flexDirection="row" gap={2}>
-          <Button key="previous" plain hotkey="j" onPress={() => void select(position - 1)}>‹ 前</Button>
-          <Button key="next" plain hotkey="k" onPress={() => void select(position + 1)}>次 ›</Button>
-          <Button key="changed-only" plain hotkey="c" onPress={() => void update($, gallery, old => (old === null ? old : { ...old, isChangedOnly: !old.isChangedOnly, index: 0 }))}>
+          <Button key="previous" plain hotkey="j" onPress={() => void select(position - 1).catch(report($, '前へ移ること'))}>‹ 前</Button>
+          <Button key="next" plain hotkey="k" onPress={() => void select(position + 1).catch(report($, '次へ移ること'))}>次 ›</Button>
+          <Button key="changed-only" plain hotkey="c" onPress={() => void update($, gallery, old => (old === null ? old : { ...old, isChangedOnly: !old.isChangedOnly, index: 0 })).catch(report($, '絞り込みの切り替え'))}>
             {state.isChangedOnly ? 'すべて' : '変更だけ'}
           </Button>
           {current !== undefined && (
-            <Button key="finder" plain hotkey="o" onPress={() => void $.process.run(['open', '-R', current.after])}>Finder</Button>
+            <Button key="finder" plain hotkey="o" onPress={() => void succeeded($, ['open', '-R', current.after], 'Finder で開くこと')}>Finder</Button>
           )}
           <Text dimColor>↑↓ スクロール</Text>
         </Box>
