@@ -7,7 +7,8 @@ export type Step = { label: string; state: StepState; detail: string; ratio: num
 export type Fill = { tokens: number; window: number; percent: number; fixed: number }
 
 // 触ったファイル 1 つの、まだ commit していない差分。isNew は未追跡
-export type Change = { path: string; added: number; removed: number; isNew: boolean }
+// isOutside: リポジトリの外のファイル。差分を測れないので、行の数は 0 とする
+export type Change = { path: string; added: number; removed: number; isNew: boolean; isOutside: boolean }
 
 export type Facts = {
   repo: string

@@ -148,7 +148,7 @@ test('棒・時間・差分の数え方', () => {
   expect(tail('plugins/handoff/hooks/register.tsx', 20)).toBe('…/hooks/register.tsx')
   expect(tail('averyveryverylongname.tsx', 10)).toBe('…gname.tsx')
   expect(tail('a.ts', 14)).toBe('a.ts')
-  expect(largest([{ path: 'a', added: 1, removed: 0, isNew: false }, { path: 'b', added: 5, removed: 2, isNew: false }]).map(change => change.path)).toEqual(['b', 'a'])
+  expect(largest([{ path: 'a', added: 1, removed: 0, isNew: false, isOutside: false }, { path: 'b', added: 5, removed: 2, isNew: false, isOutside: false }]).map(change => change.path)).toEqual(['b', 'a'])
 })
 
 test('メモを項目ごとに分ける。決まりの形でなければ空にする', () => {
@@ -156,6 +156,11 @@ test('メモを項目ごとに分ける。決まりの形でなければ空に�
   expect(parts).toEqual({ goal: 'a', decisions: ['b', 'c', 'd'], next: ['e', 'f'], files: ['x.ts, y.ts'], unverified: ['g'] })
   expect(isEmptyParts(parts)).toBe(false)
   expect(isEmptyParts(partsOf('メモは書けませんでした'))).toBe(true)
+})
+
+test('字下げした項目も読む。同じ深さの次の項目は続きの行にしない', () => {
+  const parts = partsOf('# 引き継ぎ\n  - 目的：a\n  - 決めたこと：b\n    - c\n  - 次：1. e 2. f\n  - 触ったファイル：x.ts\n  - 未検証：g\n')
+  expect(parts).toEqual({ goal: 'a', decisions: ['b', 'c'], next: ['e', 'f'], files: ['x.ts'], unverified: ['g'] })
 })
 
 test('/handoff で、ペインを開き、触ったファイルを渡してメモを書き、.gitignore に足す', async ($, on) => {
@@ -185,6 +190,19 @@ test('ファイルの差分は、触ったファイルだけで数え、未追�
   const ui = await $.ui.mount(PANE('terminal'))
   expect((await ui.find({ type: 'Text', text: /^\+\d+ −\d+$/ }))?.text).toBe('+3 −0')
   expect((await ui.find({ type: 'Text', text: /^新規 / }))?.text).toBe('新規 +3 −0')
+  await ui.unmount()
+})
+
+test('リポジトリの外のファイルは、変更なしではなく外と出す', async ($, on) => {
+  engine(on, { messages: [{ role: 'assistant', text: '', toolUses: [{ tool: 'Edit', input: { file_path: '/elsewhere/notes.md' } }] }] })
+  await begin($)
+
+  await $.command.run(HANDOFF)
+  await settle()
+
+  const ui = await $.ui.mount(PANE('terminal'))
+  expect(await ui.find({ type: 'Text', text: 'リポジトリの外' })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: '変更なし' })).toBeFalsy()
   await ui.unmount()
 })
 

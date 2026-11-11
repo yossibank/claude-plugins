@@ -35,41 +35,32 @@ export const cleanMemo = (raw: string) => {
 
 export const lineCount = (text: string) => text.trimEnd().split('\n').length
 
-// 「- 名前：a」の行と、その下に字下げして続く行を、項目の並びにする。同じ名前の行が何度あってもよい
+// 「- 名前：a」の行と、その下に見出しより深く字下げして続く行を、項目の並びにする。見出しの字下げは問わない。同じ名前の行が何度あってもよい
 const fieldOf = (text: string, name: string) => {
-  const head = new RegExp(`^[-*]\\s*${name}[：:]\\s*(.*)$`)
+  const head = new RegExp(`^(\\s*)[-*]\\s*${name}[：:]\\s*(.*)$`)
   const items: string[] = []
-  let isInside = false
+  let depth: number | null = null
   for (const line of text.split('\n')) {
-    const first = line.match(head)?.[1]
-    if (first !== undefined) {
-      isInside = true
-      if (first.trim() !== '') items.push(first.trim())
-    } else if (isInside && /^\s+\S/.test(line)) {
+    const match = line.match(head)
+    if (match) {
+      depth = match[1]?.length ?? 0
+      const first = match[2]?.trim() ?? ''
+      if (first !== '') items.push(first)
+    } else if (depth !== null && line.trim() !== '' && line.length - line.trimStart().length > depth) {
       items.push(line.trim().replace(/^(?:[-*]|\d+[.．])\s+/, ''))
     } else {
-      isInside = false
+      depth = null
     }
   }
   return items
 }
 
-// 「次：1. a 2. b」を [a, b] にする。字下げして続く行も読む
-export const nextOf = (text: string) => {
-  const lines = text.split('\n')
-  const at = lines.findIndex(line => /^\s*[-*]\s*次[：:]/.test(line))
-  if (at < 0) return []
-  const chunks = [lines[at]?.match(/^\s*[-*]\s*次[：:]\s*(.*)$/)?.[1] ?? '']
-  for (const line of lines.slice(at + 1)) {
-    if (!/^\s+\S/.test(line)) break
-    chunks.push(line.trim())
-  }
-  return chunks
-    .join(' ')
-    .split(/(?:^|\s)\d+[.．]\s+/)
+// 「次：1. a 2. b」と、その下の「1. a」の行を [a, b] にする
+export const nextOf = (text: string) =>
+  fieldOf(text, '次')
+    .flatMap(item => item.split(/(?:^|\s)\d+[.．]\s+/))
     .map(item => item.trim())
     .filter(item => item !== '')
-}
 
 export const unverifiedOf = (text: string) => fieldOf(text, '未検証')
 

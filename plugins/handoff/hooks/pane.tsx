@@ -266,7 +266,9 @@ export function drawPane({ ui, now, at, columns, actions }: Draw) {
               <Text color={change.isNew ? 'success' : change.added + change.removed > 0 ? 'warning' : 'inactive'}>{change.isNew ? '+' : change.added + change.removed > 0 ? '●' : '○'}</Text>{' '}
               {tail(change.path, Math.max(8, width - 16))}
             </Text>
-            {change.added + change.removed === 0 ? (
+            {change.isOutside ? (
+              <Text dimColor>リポジトリの外</Text>
+            ) : change.added + change.removed === 0 ? (
               <Text dimColor>変更なし</Text>
             ) : (
               <Text>

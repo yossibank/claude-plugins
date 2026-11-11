@@ -68,10 +68,10 @@ export const numstatOf = (numstat: string) =>
       .map(([added, removed, path]) => [path, { added: Number(added) || 0, removed: Number(removed) || 0 }] as const),
   )
 
-// 触ったファイルごとの、まだ commit していない差分。未追跡のファイルは、行の数を足した行とする。リポジトリの外のファイルは 0 とする
+// 触ったファイルごとの、まだ commit していない差分。未追跡のファイルは、行の数を足した行とする。リポジトリの外のファイルは、外の印を付けて 0 とする
 async function changesOf($: EngineInterface, root: Root, files: string[]): Promise<Change[]> {
   const inside = files.filter(file => !file.startsWith('/'))
-  const clean = (path: string): Change => ({ path, added: 0, removed: 0, isNew: false })
+  const clean = (path: string): Change => ({ path, added: 0, removed: 0, isNew: false, isOutside: !root.isRepo || path.startsWith('/') })
   if (!root.isRepo || inside.length === 0) return files.map(clean)
   // [id] や * を含む名前を glob と読ませない。日本語の名前を \343 の形にさせない
   const [numstat, others] = await Promise.all([
@@ -92,7 +92,7 @@ async function changesOf($: EngineInterface, root: Root, files: string[]): Promi
   )
   return files.map(path => {
     const added = lines.get(path)
-    return added === undefined ? { ...clean(path), ...tracked.get(path) } : { path, added, removed: 0, isNew: true }
+    return added === undefined ? { ...clean(path), ...tracked.get(path) } : { path, added, removed: 0, isNew: true, isOutside: false }
   })
 }
 
