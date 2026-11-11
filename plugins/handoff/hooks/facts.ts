@@ -42,7 +42,7 @@ type Messages = readonly SessionMessage[]
 
 // 会話の記録を読む。読めない時は空にする
 export async function messagesOf($: EngineInterface): Promise<Messages> {
-  const value = await $.session.messages()
+  const value = await $.session.messages().catch(() => [])
   return Array.isArray(value) ? (value as Messages) : []
 }
 
@@ -69,8 +69,12 @@ async function touchedDiffOf($: EngineInterface, root: Root, files: string[]) {
   const inside = files.filter(file => !file.startsWith('/'))
   if (!root.isRepo || inside.length === 0) return { added: 0, removed: 0 }
   // [id] や * を含む名前を glob と読ませない
-  const tracked = diffOf(await git($, root.base, ['--literal-pathspecs', 'diff', '--shortstat', 'HEAD', '--', ...inside]))
-  const untracked = (await git($, root.base, ['--literal-pathspecs', 'ls-files', '--others', '--exclude-standard', '--', ...inside])).split('\n').filter(file => file !== '')
+  const [shortstat, others] = await Promise.all([
+    git($, root.base, ['--literal-pathspecs', 'diff', '--shortstat', 'HEAD', '--', ...inside]),
+    git($, root.base, ['--literal-pathspecs', 'ls-files', '--others', '--exclude-standard', '--', ...inside]),
+  ])
+  const tracked = diffOf(shortstat)
+  const untracked = others.split('\n').filter(file => file !== '')
   const lines = await Promise.all(
     untracked.map(file =>
       $.fs
@@ -83,11 +87,14 @@ async function touchedDiffOf($: EngineInterface, root: Root, files: string[]) {
 }
 
 export async function gather($: EngineInterface, root: Root, path: string, messages: Messages): Promise<Facts> {
-  const usage = await $.session.usage().catch(() => undefined)
-  const previous = (await $.fs.exists(path)) ? await $.fs.stat(path).catch(() => undefined) : undefined
-  const branch = root.isRepo ? await git($, root.base, ['branch', '--show-current']) : ''
   const files = filesOf(messages, root.base)
-  const diff = await touchedDiffOf($, root, files)
+  // 互いに待たないので、まとめて取る
+  const [usage, previous, branch, diff] = await Promise.all([
+    $.session.usage().catch(() => undefined),
+    $.fs.exists(path).then(isFound => (isFound ? $.fs.stat(path).catch(() => undefined) : undefined)),
+    root.isRepo ? git($, root.base, ['branch', '--show-current']) : '',
+    touchedDiffOf($, root, files),
+  ])
   return {
     repo: root.base.split('/').pop() ?? root.base,
     branch,
