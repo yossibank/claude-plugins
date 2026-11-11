@@ -283,6 +283,14 @@ test('options: キャッシュの寿命を変える', { options: { cacheMinutes:
   expect((await lines($)).some(line => /· . cold ─╯$/u.test(line))).toBe(true)
 })
 
+test('options: キャッシュの寿命が数でなければ、既定の 60 分で数える', { options: { cacheMinutes: 'x' } }, async ($, on) => {
+  const { clock } = engine(on, 35)
+  await start($)
+  await clock.advance(6 * MINUTE)
+
+  expect((await lines($)).some(line => /· . 54m ─╯$/u.test(line))).toBe(true)
+})
+
 test('usage が失敗したら前の値を残す', async ($, on) => {
   const state: { isUsageBroken: boolean; free?: number } = { isUsageBroken: false }
   engine(on, 41, 200000, false, state)

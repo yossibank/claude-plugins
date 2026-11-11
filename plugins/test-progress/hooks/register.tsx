@@ -232,10 +232,8 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const now = await $.clock.now()
-    const all = Object.entries(await read($, runs))
-    const alive = all.filter(([, one]) => now - one.startedAt <= GIVE_UP_MS)
-    if (alive.length < all.length) await update($, runs, old => Object.fromEntries(Object.entries(old).filter(([, one]) => now - one.startedAt <= GIVE_UP_MS)))
-    const current = alive.filter(([, one]) => one.isWritten)
+    // 1 時間を超えた見張りは、見張り自身が止めて消す。描く時は書かずに出さないだけにする
+    const current = Object.entries(await read($, runs)).filter(([, one]) => one.isWritten && now - one.startedAt <= GIVE_UP_MS)
     if (e.props.hasSurvey || current.length === 0) return next(e)
 
     const { Box, Text } = $.ui.resolve(e)
