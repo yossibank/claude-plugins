@@ -1,4 +1,4 @@
-import type { Register, Timer } from 'claude-code'
+import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import type { Phase } from '../types'
 
@@ -7,6 +7,7 @@ import { addWorkerUsage, currentWorkers, dropFinished, endAgentCall, finishWorke
 import { workingLine } from './band'
 import { draw } from './cell'
 import type { Seg } from './cell'
+import { hasSessionChanged } from './clear'
 import { PANE, SLACK_COLUMNS, TITLE, WATCH_MS } from './config'
 import { currentPaneShown, watchPane } from './pane'
 import { TN } from './palette'
@@ -24,29 +25,38 @@ let watcher: Timer | undefined
 // アイコンと文字の間の空白
 const GUTTER_COLUMNS = 1
 
+// /clear は新しいセッションとして続き、state が初めに戻るのに session.start が来ない
+// classic.SessionStart は先に動くプラグインに止められることがあるので、ターンの始めと見張りでも id の変わり目を見る
+const followSession = async ($: EngineInterface) => {
+  if (await hasSessionChanged($)) await forget($)
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     await forget($)
+    await hasSessionChanged($)
     await $.command.register({ name: 'agent-progress', description: 'メインとサブエージェントの作業を右の pane に出す' })
     $.ui.open({ id: PANE, title: TITLE }).catch(error => report($, 'pane を開くこと', error))
     watcher?.cancel()
     watcher = $.clock.every(WATCH_MS, () => {
-      watchPane($).catch(error => report($, 'pane の見張り', error))
+      followSession($)
+        .then(() => watchPane($))
+        .catch(error => report($, 'pane の見張り', error))
     })
     return started
   })
 
   on('classic.SessionStart', async ($, e, next) => {
     const started = await next(e)
-    // /clear は新しいセッションとして続き、state が初めに戻るのに session.start が来ないので、ここで忘れる
-    if (e.source === 'clear') await forget($)
+    await followSession($)
     return started
   })
 
   on('turn.start', async ($, e, next) => {
     const started = await next(e)
     if (e.agentId === undefined) {
+      await followSession($)
       await dropFinished($)
       await startTurn($)
       await act($, { isWorking: true, tool: null, phase: null, startedAt: null })

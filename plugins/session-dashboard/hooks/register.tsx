@@ -1,9 +1,10 @@
-import type { Register, Timer } from 'claude-code'
+import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import { statusLine } from './band'
 import { claudeCard, contextCard, limitCard, repoCard, sessionCard, unmeasuredCard } from './cards'
 import { draw } from './cell'
 import type { Seg } from './cell'
+import { hasSessionChanged } from './clear'
 import { currentClaude, limitsOf, readClaude, updateLimits, updateModel } from './claude'
 import { configure, PANE, SLACK_COLUMNS, TITLE, WATCH_MS } from './config'
 import { currentRepo, readRepo } from './git'
@@ -15,31 +16,46 @@ import { GIT_TOOLS, QUIET_TOOLS } from './tool'
 
 let watcher: Timer | undefined
 
+// セッションの初めの値に戻し、Claude とリポジトリを読み直す
+const renew = async ($: EngineInterface) => {
+  await restart($)
+  await readClaude($)
+  await readRepo($, true)
+}
+
+// /clear は新しいセッションとして続き、state が初めに戻るのに session.start が来ない
+// classic.SessionStart は先に動くプラグインに止められることがあるので、ターンの始めと見張りでも id の変わり目を見る
+const followSession = async ($: EngineInterface) => {
+  if (await hasSessionChanged($)) await renew($)
+}
+
 export const register: Register = (on, options) => {
   const config = configure(options)
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
-    await restart($)
-    await readClaude($)
-    await readRepo($, true)
+    await renew($)
+    await hasSessionChanged($)
     await $.command.register({ name: 'session-dashboard', description: 'セッションの計器盤を右の pane に出す' })
     $.ui.open({ id: PANE, title: TITLE }).catch(error => report($, 'pane を開くこと', error))
     watcher?.cancel()
     watcher = $.clock.every(WATCH_MS, () => {
-      watchPane($).catch(error => report($, 'pane の見張り', error))
+      followSession($)
+        .then(() => watchPane($))
+        .catch(error => report($, 'pane の見張り', error))
     })
     return started
   })
 
   on('classic.SessionStart', async ($, e, next) => {
     const started = await next(e)
-    // /clear は新しいセッションとして続き、state が初めに戻るのに session.start が来ないので、ここで読み直す
-    if (e.source === 'clear') {
-      await restart($)
-      await readClaude($)
-      await readRepo($, true)
-    }
+    await followSession($)
+    return started
+  })
+
+  on('turn.start', async ($, e, next) => {
+    const started = await next(e)
+    if (e.agentId === undefined) await followSession($)
     return started
   })
 
