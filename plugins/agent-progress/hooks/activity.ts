@@ -1,13 +1,14 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Timer } from 'claude-code'
 
-import type { Activity, Running } from '../types'
+import type { Action, Activity, Running } from '../types'
 
 import { clearWorkers, currentWorkers } from './agents'
 import { PANE } from './config'
 import { TN } from './palette'
 import { report } from './report'
-import { FRAME_MS, FRAMES, spriteCells } from './sprite'
+import { FRAME_MS, spriteCells, TICKS_PER_SECOND } from './sprite'
+import { resetTally } from './tally'
 import { resetTurn } from './usage'
 import { currentTasks, resetTasks, taskLineOf } from './tasks'
 import { duration } from './time'
@@ -57,20 +58,20 @@ export async function clearCalls($: EngineInterface) {
 
 let ticker: Timer | undefined
 let frame = 0
-// 今の描画で動かすアイコン。Raster の key と色
-let animated = new Map<string, string>()
+// 今の描画で動かすアイコン。Raster の key と、色と動き
+let animated = new Map<string, { color: string; action: Action }>()
 
 export const currentFrame = () => frame
 
 // 描くたびに、動かすアイコンを覚え直す
-export function animate(sprites: ReadonlyMap<string, string>) {
+export function animate(sprites: ReadonlyMap<string, { color: string; action: Action }>) {
   animated = new Map(sprites)
 }
 
 // アイコンだけを次のコマに差し替える。描き直しはしない
 function blitFrame($: EngineInterface) {
-  for (const [key, color] of animated)
-    $.ui.blit({ requestId: PANE, key, cells: spriteCells(frame, color) }).catch(error => report($, 'アイコンの差し替え', error))
+  for (const [key, { color, action }] of animated)
+    $.ui.blit({ requestId: PANE, key, cells: spriteCells(frame, color, action) }).catch(error => report($, 'アイコンの差し替え', error))
 }
 
 // 動いている間だけ、1 コマごとにアイコンを進め、1 秒ごとに経った秒数を描き直す
@@ -83,7 +84,7 @@ export function tickWhileRunning($: EngineInterface, isRunning: boolean) {
   ticker ??= $.clock.every(FRAME_MS, () => {
     frame += 1
     blitFrame($)
-    if (frame % FRAMES.length !== 0) return
+    if (frame % TICKS_PER_SECOND !== 0) return
     $.clock
       .now()
       .then(now => update($, second, () => Math.floor(now / 1000)))
@@ -96,6 +97,7 @@ export type Step = { mark: string; text: string; color: string }
 export const phaseLine = (doing: Activity, now: number): Step | null => {
   const { phase } = doing
   if (phase === 'thinking') return { mark: '', text: '考えています…', color: TN.comment }
+  if (phase === 'compacting') return { mark: '', text: '会話を要約しています…', color: TN.comment }
   if (doing.tool === null) return null
   if (phase === 'preparing') return { mark: '', text: `${doing.tool} を準備しています…`, color: TN.comment }
   if (phase === 'running') {
@@ -115,6 +117,7 @@ export async function forget($: EngineInterface) {
   await clearCalls($)
   await clearWorkers($)
   await resetTurn($)
+  await resetTally($)
   tickWhileRunning($, false)
   await update($, activity, () => IDLE)
 }

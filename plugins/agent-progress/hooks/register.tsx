@@ -1,9 +1,9 @@
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { Phase } from '../types'
+import type { Phase, TurnEnd } from '../types'
 
 import { act, animate, clearCalls, currentActivity, currentFrame, currentRunning, currentSecond, endCall, forget, phaseLine, refreshTicker, startCall } from './activity'
-import { addWorkerUsage, currentWorkers, dropFinished, endAgentCall, finishWorker, reconcileWorkers, restartWorker, spawnWorker, startAgentCall } from './agents'
+import { addWorkerUsage, currentWorkers, dropFinished, endAgentCall, finishWorker, reconcileWorkers, restartWorker, sayWorker, spawnWorker, startAgentCall } from './agents'
 import { workingLine } from './band'
 import { draw } from './cell'
 import type { Seg } from './cell'
@@ -12,18 +12,23 @@ import { PANE, SLACK_COLUMNS, TITLE, WATCH_MS } from './config'
 import { currentPaneShown, watchPane } from './pane'
 import { TN } from './palette'
 import { report } from './report'
-import { SPRITE_COLUMNS, SPRITE_ROWS, spriteCells } from './sprite'
+import { SPRITE_COLUMNS, SPRITE_ROWS, spriteCells, stillCells } from './sprite'
+import { countCall, currentTally, recordCall, resetTally } from './tally'
 import { currentTasks, trackTasks } from './tasks'
 import { describe, firstLine, firstLineOf, QUIET_TOOLS, toolName } from './tool'
 import type { Args } from './tool'
 import { addMainUsage, currentTurn, endTurn, spentOf, startTurn } from './usage'
-import { mainCard, sectionLine, tasksLines, workerCard } from './view'
+import { mainCard, sectionLine, tasksLines, totalLines, workerCard } from './view'
 import type { Card } from './view'
 
 let watcher: Timer | undefined
 
 // アイコンと文字の間の空白
 const GUTTER_COLUMNS = 1
+// カードの枠と、その内側の空白が取る幅
+const FRAME_COLUMNS = 4
+// これより狭い pane では、枠を付けずに文字の幅を残す
+const FRAMED_FROM_COLUMNS = 40
 
 // /clear は新しいセッションとして続き、state が初めに戻るのに session.start が来ない
 // classic.SessionStart は先に動くプラグインに止められることがあるので、ターンの始めと見張りでも id の変わり目を見る
@@ -63,6 +68,7 @@ export const register: Register = on => {
       await followSession($)
       await dropFinished($)
       await startTurn($)
+      await resetTally($)
       await act($, { isWorking: true, tool: null, phase: null, startedAt: null })
     } else await restartWorker($, e.agentId)
     await refreshTicker($)
@@ -99,13 +105,14 @@ export const register: Register = on => {
         if (chunk.kind === 'thinking' && isMain && !isThinking && (await currentRunning($)).length === 0) {
           isThinking = true
           await act($, { phase: 'thinking' })
-        } else if (chunk.kind === 'text' && isMain && !isSaid) {
+        } else if (chunk.kind === 'text' && !isSaid) {
           text += chunk.text
           const { line, isClosed } = firstLineOf(text)
           isSaid = isClosed
           if (line !== null && line !== said) {
             said = line
-            await act($, { said, ...((await currentRunning($)).length === 0 && isThinking ? { phase: 'done' as Phase } : {}) })
+            if (isMain) await act($, { said, ...((await currentRunning($)).length === 0 && isThinking ? { phase: 'done' as Phase } : {}) })
+            else if (e.agentId !== undefined) await sayWorker($, e.agentId, said)
           }
         } else if (chunk.kind === 'tool' && isMain && !QUIET_TOOLS.has(chunk.name) && (await currentRunning($)).length === 0) {
           await act($, { tool: toolName(chunk.name), phase: 'preparing', startedAt: null })
@@ -117,11 +124,14 @@ export const register: Register = on => {
       if (stepped === undefined) await stream.return(undefined as never)
     }
     const used = stepped.usage === null ? { input: 0, output: 0, model: e.model } : spentOf(stepped.usage)
+    const closed = firstLine(stepped.answer)
     if (isMain) {
-      const said = firstLine(stepped.answer)
-      if (said !== null) await act($, { said })
+      if (closed !== null) await act($, { said: closed })
       await addMainUsage($, used)
-    } else if (e.agentId !== undefined) await addWorkerUsage($, e.agentId, used)
+    } else if (e.agentId !== undefined) {
+      if (closed !== null && closed !== said) await sayWorker($, e.agentId, closed)
+      await addWorkerUsage($, e.agentId, used)
+    }
     return stepped
   })
 
@@ -136,27 +146,37 @@ export const register: Register = on => {
     if (isShown) {
       if (e.agentId === undefined) {
         await startCall($, call)
+        await countCall($, call.name)
         await act($, { tool: call.tool, phase: 'running', startedAt: call.startedAt })
       } else await startAgentCall($, e.agentId, call)
       await refreshTicker($)
     }
+    // 断られた・エラーを返した・投げた呼び出しは、失敗として履歴に残す
+    let isError = true
     // 表示の後始末が失敗しても、ツールの結果はそのまま返す
     const settle = async () => {
       if (!isShown) return
+      const ended = { tool: call.tool, ms: (await $.clock.now()) - call.startedAt, isError }
       if (e.agentId !== undefined) {
-        await endAgentCall($, e.agentId, id)
+        await endAgentCall($, e.agentId, id, ended)
         await refreshTicker($)
         return
       }
       const left = await endCall($, id)
       if (left === null) return
+      await recordCall($, ended)
       // まだ動いている呼び出しがあれば、最後に始まったものを出す
       const last = left.at(-1)
       if (last !== undefined) await act($, { tool: last.tool, phase: 'running', startedAt: last.startedAt })
       else await act($, { tool: call.tool, phase: 'done' })
       await refreshTicker($)
     }
-    const done = await next(e).finally(() => settle().catch(error => report($, 'ツールの後始末', error)))
+    const done = await next(e)
+      .then(answered => {
+        isError = answered.deny !== undefined || answered.isError === true
+        return answered
+      })
+      .finally(() => settle().catch(error => report($, 'ツールの後始末', error)))
     // 作業の一覧は、メインのものだけを追う
     if ('result' in done && e.agentId === undefined) {
       await trackTasks($, args, done.result)
@@ -170,11 +190,23 @@ export const register: Register = on => {
     if (e.agentId === undefined) {
       await clearCalls($)
       await reconcileWorkers($)
-      await endTurn($)
+      const end: TurnEnd = e.isAborted || e.reason === 'aborted' ? 'aborted' : e.reason === 'error' || e.reason === 'refusal' ? 'error' : 'answer'
+      await endTurn($, end)
       await act($, { isWorking: false, tool: null, phase: null, startedAt: null })
-    } else await finishWorker($, e.agentId)
+    } else await finishWorker($, e.agentId, firstLine(e.answer))
     await refreshTicker($)
     return done
+  })
+
+  // メインの会話を要約している間は、今の作業の行にそう出す。先回りの要約（precompute）は裏で動くので出さない
+  on('session.compact', async ($, e, next) => {
+    const isShown = e.agentId === undefined && (e.trigger === 'manual' || e.trigger === 'auto')
+    if (isShown) await act($, { phase: 'compacting' })
+    try {
+      return await next(e)
+    } finally {
+      if (isShown) await act($, { phase: null }).catch(error => report($, '要約の後始末', error))
+    }
   })
 
   on('command.run', { command: 'agent-progress' }, async $ => {
@@ -189,8 +221,10 @@ export const register: Register = on => {
     // Raster は端末の面にだけある。無い面では文字だけを出す
     const Raster = 'Raster' in elements ? elements.Raster : undefined
     const inner = Math.max(1, e.props.bodyColumns - 2)
-    const hasIcon = Raster !== undefined && inner > SPRITE_COLUMNS + GUTTER_COLUMNS + 8
-    const width = hasIcon ? inner - SPRITE_COLUMNS - GUTTER_COLUMNS : inner
+    const hasFrame = inner >= FRAMED_FROM_COLUMNS
+    const room = hasFrame ? inner - FRAME_COLUMNS : inner
+    const hasIcon = Raster !== undefined && room > SPRITE_COLUMNS + GUTTER_COLUMNS + 8
+    const width = hasIcon ? room - SPRITE_COLUMNS - GUTTER_COLUMNS : room
     const now = await $.clock.now()
     await currentSecond($)
     const doing = await currentActivity($)
@@ -200,17 +234,19 @@ export const register: Register = on => {
     const frame = currentFrame()
 
     const cardOf = (card: Card) => (
-      <Box key={card.key} flexDirection="row" marginBottom={1}>
-        {hasIcon ? <Raster key={card.key} columns={SPRITE_COLUMNS} rows={SPRITE_ROWS} cells={spriteCells(card.isAnimated ? frame : 0, card.color)} /> : null}
+      <Box key={card.key} flexDirection="row" {...(hasFrame ? { borderStyle: 'round', borderColor: card.color, borderDimColor: !card.isAnimated, paddingX: 1 } : { marginBottom: 1 })}>
+        {hasIcon ? <Raster key={card.key} columns={SPRITE_COLUMNS} rows={SPRITE_ROWS} cells={card.isAnimated ? spriteCells(frame, card.color, card.action) : stillCells(card.color, card.action)} /> : null}
         <Box flexDirection="column" {...(hasIcon ? { marginLeft: GUTTER_COLUMNS } : {})}>
           {card.lines.map((line, index) => draw(Text, line, String(index)))}
         </Box>
       </Box>
     )
 
-    const main = mainCard(doing, phaseLine(doing, now), await currentRunning($), await currentTurn($), now, width)
+    const turn = await currentTurn($)
+    const tally = await currentTally($)
+    const main = mainCard(doing, phaseLine(doing, now), await currentRunning($), turn, tally, now, width)
     const crew = [...running, ...ended].map(worker => workerCard(worker, now, width))
-    animate(new Map([main, ...crew].filter(card => hasIcon && card.isAnimated).map(card => [card.key, card.color])))
+    animate(new Map([main, ...crew].filter(card => hasIcon && card.isAnimated).map(card => [card.key, { color: card.color, action: card.action }])))
 
     const list = (await currentTasks($)).items.filter(item => item.subject !== '')
     // 見出しの下に 1 行空けて、カードと分ける
@@ -223,6 +259,11 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column" paddingX={1} paddingTop={1}>
         {cardOf(main)}
+        {workers.length > 0 ? (
+          <Box key="total" flexDirection="column" marginBottom={1}>
+            {totalLines(turn, tally, workers, inner).map((line: Seg[], index: number) => draw(Text, line, `total-${index}`))}
+          </Box>
+        ) : null}
         {running.length > 0 ? section('Running', running.length, TN.yellow) : null}
         {crew.slice(0, running.length).map(cardOf)}
         {ended.length > 0 ? section('Finished', ended.length, TN.green) : null}
@@ -240,7 +281,8 @@ export const register: Register = on => {
     const beneath = await next(e)
     await currentSecond($)
     const now = await $.clock.now()
-    const line = workingLine(doing, phaseLine(doing, now), await currentWorkers($), Math.max(1, e.props.bodyColumns - SLACK_COLUMNS))
+    const tasks = (await currentTasks($)).items.filter(item => item.subject !== '')
+    const line = workingLine(doing, phaseLine(doing, now), await currentWorkers($), tasks, Math.max(1, e.props.bodyColumns - SLACK_COLUMNS))
     if (line.length === 0) return beneath
     return (
       <Box flexDirection="column">

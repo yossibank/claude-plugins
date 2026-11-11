@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, TurnUsage } from 'claude-code'
 
-import type { MainTurn, Spent } from '../types'
+import type { MainTurn, Spent, TurnEnd } from '../types'
 
 const NO_TURN: MainTurn = { startedAt: null, endedAt: null, input: 0, output: 0, model: '' }
 const turn = atom({ plugin: 'agent-progress', key: 'turn' } as const, NO_TURN)
@@ -33,9 +33,9 @@ export async function addMainUsage($: EngineInterface, used: Spent) {
   await update($, turn, now => addSpent(now, used))
 }
 
-export async function endTurn($: EngineInterface) {
+export async function endTurn($: EngineInterface, end: TurnEnd) {
   const now = await $.clock.now()
-  await update($, turn, before => ({ ...before, endedAt: now }))
+  await update($, turn, before => ({ ...before, endedAt: now, end }))
 }
 
 export async function resetTurn($: EngineInterface) {
