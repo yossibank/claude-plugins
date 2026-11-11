@@ -60,17 +60,6 @@ export const padSegs = (segs: readonly Seg[], width: number): Seg[] => {
   return [...fitted, { text: ' '.repeat(Math.max(0, width - segWidth(fitted))) }]
 }
 
-// 左の列に収まる最小の幅。右の列を足すと、これを割る時は右の列を落とす
-const MIN_LEFT_COLUMNS = 12
-
-// 左の列と、右に寄せる列を 1 行に並べる。狭ければ右の列から落とす
-export const twoColumns = (left: readonly Seg[], right: readonly Seg[], width: number): Seg[] => {
-  const room = width - segWidth(right) - 1
-  if (right.length === 0 || room < MIN_LEFT_COLUMNS) return fitSegs(left, width)
-  const fitted = fitSegs(left, room)
-  return [...fitted, { text: ' '.repeat(width - segWidth(fitted) - segWidth(right)) }, ...right]
-}
-
 type TextElement = ReturnType<EngineInterface['ui']['resolve']>['Text']
 
 export const draw = (Text: TextElement, segs: readonly Seg[], key: string) => (

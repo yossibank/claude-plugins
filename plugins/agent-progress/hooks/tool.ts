@@ -12,6 +12,9 @@ export const firstLine = (answer: string) =>
 
 const baseName = (path: unknown) => (typeof path === 'string' ? (path.split('/').pop() ?? path) : '')
 
+// 名前だけの 1 行。MCP のツールは最後の名前だけにする。準備中のツールにも使う
+export const toolName = (tool: string) => (tool.startsWith('mcp__') ? (tool.split('__').pop() ?? tool) : tool)
+
 export type Args = Record<string, unknown>
 
 export const textOf = (e: Args, key: string) => (typeof e[key] === 'string' ? (e[key] as string) : undefined)
@@ -46,10 +49,6 @@ export const describe = (e: Args) => {
         return ''
     }
   })()
-  const name = tool.startsWith('mcp__') ? (tool.split('__').pop() ?? tool) : tool
-  const line = detail === '' ? name : `${name}: ${detail.split('\n')[0]}`
-  return line
+  const name = toolName(tool)
+  return detail === '' ? name : `${name}: ${detail.split('\n')[0]}`
 }
-
-// 名前だけの 1 行。準備中のツールに使う
-export const toolName = (tool: string) => (tool.startsWith('mcp__') ? (tool.split('__').pop() ?? tool) : tool)
