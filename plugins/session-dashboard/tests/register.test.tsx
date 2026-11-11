@@ -22,6 +22,16 @@ type State = {
   isRepoMissing?: boolean
   isVersionBroken?: boolean
   isPanesBroken?: boolean
+  // git の出力の上書き。鍵は引数の頭の 2 つ
+  git?: Record<string, string>
+  // 自動の要約が始まるトークン数
+  compactAt?: number
+  // 文脈の割合の上書き。テストがターンの間に書き換える
+  percent?: number
+  // turn.step が返す usage
+  usage?: Record<string, unknown>
+  // エラーを返すツールの名前
+  failing?: string
 }
 
 const engine = (on: On, percent: number, window = 200000, isShown = false, state: State = { isUsageBroken: false }) => {
@@ -52,7 +62,7 @@ const engine = (on: On, percent: number, window = 200000, isShown = false, state
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('session.version', () => (state.isVersionBroken === true ? { deny: 'version failed' } : { value: { version: '2.1.319', base: '2.1.319' } }))
   on('process.run', (_, e) => {
-    const stdout = GIT[e.argv.slice(1, 3).join(' ')] ?? '/repo\n'
+    const stdout = { ...GIT, ...state.git }[e.argv.slice(1, 3).join(' ')] ?? '/repo\n'
     return { value: { exitCode: 0, stdout, stderr: '' } as never }
   })
   on('session.usage', (_, e) => {
@@ -67,7 +77,7 @@ const engine = (on: On, percent: number, window = 200000, isShown = false, state
       ],
       cost: { usd: 1.236 },
       context: {
-        ...(state.isUnanswered === true ? {} : { tokens: (percent * window) / 100, percent }),
+        ...(state.isUnanswered === true ? {} : { tokens: ((state.percent ?? percent) * window) / 100, percent: state.percent ?? percent }),
         window,
         breakdown: {
           categories: [row('System prompt', 18000, 'used'), row('Messages', 64000, 'used'), row('Free space', state.free ?? 100000, 'free'), row('Autocompact buffer', 18000, 'buffer')],
@@ -77,12 +87,14 @@ const engine = (on: On, percent: number, window = 200000, isShown = false, state
           percentage: percent,
           gridRows: [],
           model: 'claude-opus-5-5',
+          ...(state.compactAt === undefined ? { isAutoCompactEnabled: false } : { isAutoCompactEnabled: true, autoCompactThreshold: state.compactAt }),
         },
       },
     } as never,
     }
   })
   on('tool.call', (_, e) => {
+    if (e.tool === state.failing) return { isError: true, result: undefined, text: 'failed' } as never
     return { result: { stdout: 'ok', stderr: '' }, text: 'ok' } as never
   })
   on('ui.render', ($, e) => {
@@ -90,7 +102,7 @@ const engine = (on: On, percent: number, window = 200000, isShown = false, state
     return <Text>engine</Text>
   })
   on('turn.step', async function* (_, e) {
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null } as never
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: state.usage ?? null } as never
   })
   return { clock, counts, toasts, session }
 }
@@ -101,7 +113,7 @@ const BAND = {
   plugin: 'session-dashboard',
   surface: 'terminal',
   component: 'AbovePrompt',
-  props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+  props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
   viewport: { columns: 80, rows: 40 },
 } as const
 
@@ -473,4 +485,123 @@ test('pane の見張りに失敗したら、同じ失敗は 1 度だけトース
   await clock.advance(6000)
 
   expect(toasts.filter(text => /pane の見張り.*panes failed/.test(text))).toHaveLength(1)
+})
+
+test('pane: リポジトリの表に、upstream との差と最後の commit を出す', async ($, on) => {
+  const git = { 'rev-list --left-right': '1\t2\n', 'log -1': `${(T0 - 3 * 60 * MINUTE) / 1000}\tfix: 直す\n` }
+  engine(on, 41, 200000, false, { isUsageBroken: false, git })
+  await start($)
+
+  const found = await lines($)
+  expect(found.some(line => /^│ sync {3}│ ↑2 ↓1 +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /^│ last {3}│ 3h前 fix: 直す +│$/u.test(line))).toBe(true)
+})
+
+test('pane: upstream と揃っていれば「同期済み」と出し、upstream が無ければ行を出さない', async ($, on) => {
+  const state: State = { isUsageBroken: false, git: { 'rev-list --left-right': '0\t0\n' } }
+  engine(on, 41, 200000, false, state)
+  await start($)
+  expect((await lines($)).some(line => /^│ sync {3}│ 同期済み +│$/u.test(line))).toBe(true)
+
+  state.git = {}
+  await $.turn.complete(done())
+  expect((await lines($)).some(line => /sync|last/.test(line))).toBe(false)
+})
+
+test('pane: 上限の表の下の罫線に、今のペースで戻る時刻まで使った時の予測を出す', async ($, on) => {
+  engine(on, 41)
+  await start($)
+
+  // 5h は 300 分のうち 170 分で 62%、7d は 10080 分のうち 5460 分で 43%
+  expect((await lines($)).some(line => /^╰─+ 予測 5h 109% · 7d 79% ─╯$/u.test(line))).toBe(true)
+  const ui = await $.ui.mount(PANE)
+  expect((await ui.find({ type: 'Text', text: /^5h 109%$/ }))?.props?.bold).toBe(true)
+  await ui.unmount()
+})
+
+test('pane: 窓の長さが分からない上限には、予測を出さない', async ($, on) => {
+  engine(on, 41)
+  await start($)
+  await $.session.measure({ context: { window: 200000 }, rateLimits: [{ kind: 'weekly_opus', percentUsed: 20, resetsAt: new Date(T0 + MINUTE).toISOString() }], cost: { usd: 1 }, changed: ['rateLimits'] } as never)
+
+  expect((await lines($)).some(line => /予測/.test(line))).toBe(false)
+})
+
+test('pane: 文脈の表に、自動の要約までの残りと、ターンごとの推移からあと何ターンかを出す', async ($, on) => {
+  const state: State = { isUsageBroken: false, compactAt: 180000 }
+  engine(on, 41, 200000, false, state)
+  await start($)
+
+  // 推移が無い間は、残りだけを出す
+  const before = await lines($)
+  expect(before.some(line => /^│ 要約まで │ あと 98k +│$/u.test(line))).toBe(true)
+  expect(before.some(line => /推移/.test(line))).toBe(false)
+
+  await $.turn.complete(done())
+  state.percent = 46
+  await $.turn.complete(done('t2'))
+
+  // 82k から 92k に増えたので、1 ターンで 10k。残り 88k は 9 ターン分
+  const found = await lines($)
+  expect(found.some(line => /^│ 推移 {5}│ ▄▄ \+10k\/ターン +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /^│ 要約まで │ あと 88k · 約 9 ターン +│$/u.test(line))).toBe(true)
+})
+
+test('pane: 自動の要約のしきい値を超えていたら「まもなく」と出す', async ($, on) => {
+  engine(on, 95, 200000, false, { isUsageBroken: false, compactAt: 180000 })
+  await start($)
+
+  expect((await lines($)).some(line => /^│ 要約まで │ まもなく +│$/u.test(line))).toBe(true)
+})
+
+test('pane: Tokens の表に、入力・出力の合計と、キャッシュから読めた割合を出す', async ($, on) => {
+  const usage = { input_tokens: 1200, cache_read_input_tokens: 40000, cache_creation_input_tokens: 7000, output_tokens: 3100, model: 'claude-opus-5-5' }
+  engine(on, 41, 200000, false, { isUsageBroken: false, usage })
+  await start($)
+  expect((await lines($)).some(line => /Tokens/.test(line))).toBe(false)
+
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', messageCount: 1 })) void _
+  // サブエージェントの分も合計に足す
+  for await (const _ of $.turn.step({ turnId: 't2', index: 0, model: 'claude-opus-5-5', messageCount: 1, agentId: 'a1' } as never)) void _
+
+  const found = await lines($)
+  expect(found.some(line => /^╭─ . Tokens ─+╮$/u.test(line))).toBe(true)
+  expect(found.some(line => /^│ in {4}│ 96k · 新規 16k +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /^│ out {3}│ 6k +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /^│ cache │ ━+ {2}83% │$/u.test(line))).toBe(true)
+})
+
+test('Session: ターンの平均と直近の時間、よく使ったツールと失敗の数を出す', async ($, on) => {
+  engine(on, 41, 200000, false, { isUsageBroken: false, failing: 'Read' })
+  await start($)
+  expect((await lines($)).some(line => /│ (turn|tools) +│/u.test(line))).toBe(false)
+
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await $.tool.call({ tool: 'Bash', command: 'ls' } as never)
+  await $.tool.call({ tool: 'Bash', command: 'pwd' } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/repo/none.ts' } as never)
+  await $.tool.call({ tool: 'mcp__slack__search', query: 'x' } as never)
+  await $.turn.complete({ ...(done() as object), durationMs: 90_000 } as never)
+  await $.turn.start({ turnId: 't2', text: 'go' })
+  await $.turn.complete({ ...(done('t2') as object), durationMs: 30_000 } as never)
+
+  const found = await lines($, 60)
+  expect(found.some(line => /│ turn {2}│ 平均 1m00s · 直近 30s +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /│ tools │ Bash 2 · Read 1 · search 1 · 失敗 1 +│$/u.test(line))).toBe(true)
+})
+
+test('/clear で、トークンの合計と文脈の推移を忘れる', async ($, on) => {
+  const usage = { input_tokens: 1200, cache_read_input_tokens: 40000, cache_creation_input_tokens: 7000, output_tokens: 3100, model: 'claude-opus-5-5' }
+  const { session } = engine(on, 41, 200000, false, { isUsageBroken: false, usage })
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', messageCount: 1 })) void _
+  await $.turn.complete(done())
+  await $.turn.complete(done('t2'))
+  expect((await lines($)).some(line => /Tokens|推移/.test(line))).toBe(true)
+
+  session.id = 's2'
+  await $.classic.SessionStart({ source: 'clear' })
+  expect((await lines($)).some(line => /Tokens|推移/.test(line))).toBe(false)
 })

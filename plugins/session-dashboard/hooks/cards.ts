@@ -1,12 +1,12 @@
-import type { Claude, Fill, Limit, Repo } from '../types'
+import type { Claude, Fill, Limit, Repo, Spent, Stats } from '../types'
 
 import { card, changeSegs, keyWidthOf, valueWidth } from './card'
 import { cellWidth, gradient } from './cell'
 import type { Seg } from './cell'
 import { LIMIT_NAMES } from './claude'
-import { heat, HEAT, ICON, TN } from './palette'
-import { elapsedOf, untilReset } from './time'
-import { gradeOf, kilo, thousands } from './tokens'
+import { blend, heat, HEAT, ICON, TN } from './palette'
+import { agoOf, durationOf, elapsedOf, paceOf, untilReset } from './time'
+import { gradeOf, growthOf, kilo, thousands } from './tokens'
 
 // 割合の列（空白 + 100%）の幅
 const PERCENT_COLUMNS = 5
@@ -16,6 +16,15 @@ const MIN_BAR_COLUMNS = 4
 const AMOUNT_COLUMNS = 7
 // 1 時間あたりの費用を出すまでの分数
 const RATE_MINUTES = 5
+// 推移の棒の字。低い順
+const SPARKS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
+// 要約まで、これより少ないターンなら赤くする
+const FEW_TURNS = 3
+// Session の表に名前を出すツールの数
+const TOOLS_SHOWN = 3
+
+const dot: Seg = { text: ' · ', color: TN.comment }
+const key = (text: string): Seg[] => [{ text, color: TN.comment }]
 
 export const claudeCard = (info: Claude, inner: number) =>
   card(
@@ -28,12 +37,20 @@ export const claudeCard = (info: Claude, inner: number) =>
     info.version === '' ? undefined : [{ text: `v${info.version}`, color: TN.comment }],
   )
 
-export const repoCard = (git: Repo, inner: number) =>
+// upstream との差。↑ はまだ push していない commit、↓ はまだ取り込んでいない commit
+const syncSegs = (ahead: number, behind: number): Seg[] => {
+  if (ahead + behind === 0) return [{ text: '同期済み', color: TN.comment }]
+  return [...(ahead > 0 ? [{ text: `↑${ahead}`, color: TN.green }] : []), ...(ahead > 0 && behind > 0 ? [{ text: ' ' }] : []), ...(behind > 0 ? [{ text: `↓${behind}`, color: TN.red }] : [])]
+}
+
+export const repoCard = (git: Repo, now: number, inner: number) =>
   card(
     [{ text: `${ICON.repo} ${git.name}`, color: TN.cyan, bold: true }],
     [
-      [[{ text: 'branch', color: TN.comment }], [{ text: git.branch === '' ? '—' : git.branch, color: TN.magenta }]],
-      [[{ text: 'diff', color: TN.comment }], changeSegs(git)],
+      [key('branch'), [{ text: git.branch === '' ? '—' : git.branch, color: TN.magenta }]],
+      [key('diff'), changeSegs(git)],
+      ...(git.ahead === undefined || git.behind === undefined ? [] : [[key('sync'), syncSegs(git.ahead, git.behind)] satisfies [Seg[], Seg[]]]),
+      ...(git.last === undefined ? [] : [[key('last'), [{ text: agoOf(now - git.last.at * 1000), color: TN.fgDark }, { text: ` ${git.last.subject}`, color: TN.fg }]] satisfies [Seg[], Seg[]]]),
     ],
     inner,
   )
@@ -58,16 +75,55 @@ export const limitCard = (limits: readonly Limit[], now: number, inner: number) 
       ]
     }),
     inner,
+    paceNote(limits, now),
   )
+}
+
+// 今のペースで戻る時刻まで使った時の予測。出せる窓が無ければ undefined
+const paceNote = (limits: readonly Limit[], now: number): Seg[] | undefined => {
+  const paces = limits.flatMap(limit => {
+    const pace = paceOf(limit.kind, limit.percentUsed, limit.resetsAt, now)
+    return pace === null ? [] : [{ name: LIMIT_NAMES[limit.kind] ?? limit.kind, pace }]
+  })
+  if (paces.length === 0) return undefined
+  return [{ text: '予測 ', color: TN.comment }, ...paces.flatMap(({ name, pace }, index): Seg[] => [...(index === 0 ? [] : [dot]), { text: `${name} ${Math.round(pace)}%`, color: heat(pace / 100), bold: pace >= 100 }])]
+}
+
+// 自動の要約までの残りと、今の増え方であと何ターンか
+const compactRow = (measured: Fill, samples: readonly number[]): [Seg[], Seg[]][] => {
+  if (measured.compactAt === undefined) return []
+  const left = measured.compactAt - measured.tokens
+  if (left <= 0) return [[[{ text: '要約まで', color: TN.fgDark }], [{ text: 'まもなく', color: TN.red, bold: true }]]]
+  const growth = growthOf(samples)
+  const turns = growth === null ? null : Math.ceil(left / growth)
+  return [
+    [
+      [{ text: '要約まで', color: TN.fgDark }],
+      [{ text: `あと ${thousands(left)}`, color: TN.fg }, ...(turns === null ? [] : [dot, { text: `約 ${turns} ターン`, color: turns < FEW_TURNS ? TN.red : TN.fgDark }])],
+    ],
+  ]
+}
+
+// メインのターンごとの文脈の量を、窓に対する高さの棒で並べる。2 回分からだけ出す
+const trendRow = (measured: Fill, samples: readonly number[], value: number): [Seg[], Seg[]][] => {
+  if (samples.length < 2) return []
+  const growth = growthOf(samples)
+  const tail = growth === null ? '' : ` +${thousands(Math.round(growth))}/ターン`
+  const shown = samples.slice(-Math.max(1, value - cellWidth(tail)))
+  const bars = shown.map((tokens): Seg => {
+    const ratio = Math.max(0, Math.min(1, tokens / measured.window))
+    return { text: SPARKS[Math.round(ratio * (SPARKS.length - 1))] ?? '▁', color: blend([TN.blue, TN.magenta], ratio) }
+  })
+  return [[[{ text: '推移', color: TN.fgDark }], [...bars, { text: tail, color: TN.comment }]]]
 }
 
 export const unmeasuredCard = (inner: number) =>
   card([{ text: `${ICON.context} Context`, color: TN.magenta, bold: true }], [[[], [{ text: 'まだ測っていません。', color: TN.comment }]]], inner)
 
-export const contextCard = (measured: Fill, left: number | null, inner: number) => {
+export const contextCard = (measured: Fill, left: number | null, samples: readonly number[], inner: number) => {
   const grade = gradeOf(measured)
   const legend = [...measured.slices].sort((x, y) => y.tokens - x.tokens)
-  const keyWidth = Math.max(4, ...legend.map(slice => cellWidth(slice.name)))
+  const keyWidth = Math.max(4, ...legend.map(slice => cellWidth(slice.name)), measured.compactAt === undefined ? 0 : cellWidth('要約まで'))
   const value = valueWidth(inner, keyWidth)
   const top = Math.max(...legend.map(slice => slice.tokens), 1)
   const total = `${thousands(measured.tokens)}/${thousands(measured.window)}`
@@ -79,6 +135,8 @@ export const contextCard = (measured: Fill, left: number | null, inner: number) 
         [{ text: slice.name, color: TN.fgDark }],
         [{ text: kilo(slice.tokens).padStart(6), color: TN.fg }, { text: ' ' }, ...gradient(slice.tokens / top, Math.max(1, value - AMOUNT_COLUMNS), [TN.magenta, TN.magenta], TN.bgHighlight, '━', ' ')],
       ]),
+      ...trendRow(measured, samples, value),
+      ...compactRow(measured, samples),
     ],
     inner,
     [
@@ -89,13 +147,45 @@ export const contextCard = (measured: Fill, left: number | null, inner: number) 
   )
 }
 
-export const sessionCard = (ms: number, turns: number, calls: number, spent: number | null, inner: number) => {
+// セッションで使ったトークンの合計と、入力のうちキャッシュから読めた割合。まだ応答が無ければ空
+export const tokensCard = (spent: Spent, inner: number): Seg[][] => {
+  const input = spent.input + spent.cacheRead + spent.cacheWrite
+  if (input + spent.output === 0) return []
+  const hit = input === 0 ? 0 : spent.cacheRead / input
+  const value = valueWidth(inner, cellWidth('cache'))
+  const percent = `${Math.round(hit * 100)}%`.padStart(4)
+  return card(
+    [{ text: `${ICON.tokens} Tokens`, color: TN.green, bold: true }],
+    [
+      [key('in'), [{ text: thousands(input), color: TN.fg }, { text: ` · 新規 ${thousands(spent.input + spent.cacheWrite)}`, color: TN.fgDark }]],
+      [key('out'), [{ text: thousands(spent.output), color: TN.fg }]],
+      // キャッシュは、よく効いているほど緑にする
+      [key('cache'), [...gradient(hit, Math.max(1, value - PERCENT_COLUMNS), [TN.orange, TN.green], TN.line), { text: ` ${percent}`, color: blend([TN.orange, TN.green], hit), bold: true }]],
+    ],
+    inner,
+  )
+}
+
+// よく使ったツールを多い順に並べ、失敗の数を添える
+const toolSegs = (counted: Stats): Seg[] => {
+  const names = Object.entries(counted.byName).sort(([, x], [, y]) => y - x).slice(0, TOOLS_SHOWN)
+  return [
+    ...names.flatMap(([name, count], index): Seg[] => [...(index === 0 ? [] : [dot]), { text: `${name} ${count}`, color: TN.fgDark }]),
+    ...(counted.errors === 0 ? [] : [dot, { text: `失敗 ${counted.errors}`, color: TN.red }]),
+  ]
+}
+
+export const sessionCard = (ms: number, counted: Stats, spent: number | null, inner: number) => {
   const rate = spent === null || ms < RATE_MINUTES * 60_000 ? '—' : `$${(spent / (ms / 3_600_000)).toFixed(2)}/h`
   return card(
     [{ text: `${ICON.session} Session`, color: TN.teal, bold: true }],
     [
-      [[{ text: 'time', color: TN.comment }], [{ text: elapsedOf(ms), color: TN.fg }, { text: ` · ${turns} turns`, color: TN.fgDark }]],
-      [[{ text: 'calls', color: TN.comment }], [{ text: String(calls), color: TN.fg }, { text: ` · ${rate}`, color: TN.orange }]],
+      [key('time'), [{ text: elapsedOf(ms), color: TN.fg }, { text: ` · ${counted.turns} turns`, color: TN.fgDark }]],
+      [key('calls'), [{ text: String(counted.calls), color: TN.fg }, { text: ` · ${rate}`, color: TN.orange }]],
+      ...(counted.turns === 0
+        ? []
+        : [[key('turn'), [{ text: `平均 ${durationOf(counted.turnMs / counted.turns)}`, color: TN.fg }, { text: ` · 直近 ${durationOf(counted.lastTurnMs)}`, color: TN.fgDark }]] satisfies [Seg[], Seg[]]]),
+      ...(counted.calls === 0 ? [] : [[key('tools'), toolSegs(counted)] satisfies [Seg[], Seg[]]]),
     ],
     inner,
   )

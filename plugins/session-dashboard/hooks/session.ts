@@ -4,7 +4,7 @@ import type { EngineInterface } from 'claude-code'
 import type { Config } from './config'
 import { PANE } from './config'
 import { resetStats } from './stats'
-import { measure } from './tokens'
+import { measure, resetTokens } from './tokens'
 
 const lastTurnEnd = atom({ plugin: 'session-dashboard', key: 'lastTurnEnd' } as const, null)
 const sessionStart = atom({ plugin: 'session-dashboard', key: 'sessionStart' } as const, null)
@@ -16,6 +16,7 @@ async function begin($: EngineInterface) {
   await update($, sessionStart, () => now)
   await update($, lastTurnEnd, () => null)
   await resetStats($)
+  await resetTokens($)
 }
 
 export async function restart($: EngineInterface) {

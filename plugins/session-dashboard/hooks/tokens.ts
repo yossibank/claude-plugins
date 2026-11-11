@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface } from 'claude-code'
+import type { EngineInterface, TurnUsage } from 'claude-code'
 
-import type { Fill } from '../types'
+import type { Fill, Spent } from '../types'
 
 const fill = atom({ plugin: 'session-dashboard', key: 'fill' } as const, null, { shape: 'fill-2' })
 
@@ -48,8 +48,53 @@ export async function measure($: EngineInterface) {
     tokens,
     window,
     percent: window === 0 ? 0 : Math.round((tokens / window) * 100),
+    ...(context.breakdown?.isAutoCompactEnabled === true && context.breakdown.autoCompactThreshold !== undefined ? { compactAt: context.breakdown.autoCompactThreshold } : {}),
   }
   await update($, fill, () => measured)
+}
+
+// メインのターンの終わりごとの、文脈のトークン数。新しい順に HISTORY_KEPT 回分
+const HISTORY_KEPT = 16
+const history = atom({ plugin: 'session-dashboard', key: 'history' } as const, [] as number[])
+
+export async function currentHistory($: EngineInterface) {
+  return read($, history)
+}
+
+// 測った後の文脈の量を、推移に足す
+export async function recordFill($: EngineInterface) {
+  const measured = await read($, fill)
+  if (measured === null || measured.window === 0) return
+  await update($, history, now => [...now, measured.tokens].slice(-HISTORY_KEPT))
+}
+
+// 1 ターンで増える量の平均。直近 GROWTH_TURNS 回の、増えた分だけで出す。出せなければ null
+const GROWTH_TURNS = 5
+export const growthOf = (samples: readonly number[]) => {
+  const steps = samples.slice(1).map((tokens, index) => tokens - (samples[index] ?? tokens)).filter(step => step > 0).slice(-GROWTH_TURNS)
+  return steps.length === 0 ? null : steps.reduce((sum, step) => sum + step, 0) / steps.length
+}
+
+const NO_SPENT: Spent = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+const spent = atom({ plugin: 'session-dashboard', key: 'spent' } as const, NO_SPENT)
+
+export async function currentSpent($: EngineInterface) {
+  return read($, spent)
+}
+
+// 1 回の応答で使ったトークンを、セッションの合計に足す
+export async function addSpent($: EngineInterface, usage: TurnUsage) {
+  await update($, spent, now => ({
+    input: now.input + usage.input_tokens,
+    output: now.output + usage.output_tokens,
+    cacheRead: now.cacheRead + usage.cache_read_input_tokens,
+    cacheWrite: now.cacheWrite + usage.cache_creation_input_tokens,
+  }))
+}
+
+export async function resetTokens($: EngineInterface) {
+  await update($, history, () => [])
+  await update($, spent, () => NO_SPENT)
 }
 
 // 空きの割合で S〜D を決める
