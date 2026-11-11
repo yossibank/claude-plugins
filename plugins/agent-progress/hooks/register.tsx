@@ -27,8 +27,12 @@ const GUTTER_COLUMNS = 1
 
 // /clear は新しいセッションとして続き、state が初めに戻るのに session.start が来ない
 // classic.SessionStart は先に動くプラグインに止められることがあるので、ターンの始めと見張りでも id の変わり目を見る
+// リセットの途中に来た呼び出しも、それが終わるまで待ってから進む。待たないと、ターンの始めに書いた値をリセットが消す
+let resetting: Promise<void> = Promise.resolve()
+
 const followSession = async ($: EngineInterface) => {
-  if (await hasSessionChanged($)) await forget($)
+  if (await hasSessionChanged($)) resetting = forget($).catch(error => report($, 'セッションの切り替え', error))
+  await resetting
 }
 
 export const register: Register = on => {
