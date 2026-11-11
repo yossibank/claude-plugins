@@ -10,7 +10,7 @@ const BEFORE = DEFAULT_BEFORE
 
 const file = (name: string, mtimeMs: number) => ({ name, kind: 'file' as const, size: 1, mtimeMs, isLink: false })
 
-type Setup = { root?: string; after?: string; before?: string; failure?: Record<string, unknown>; exit?: Record<string, number>; missing?: string[]; extra?: string[]; toasts?: string[]; afterMs?: number; beforeMs?: number; isOpenBroken?: boolean }
+type Setup = { root?: string; after?: string; before?: string; failure?: Record<string, unknown>; exit?: Record<string, number>; missing?: string[]; extra?: string[]; toasts?: string[]; afterMs?: number; beforeMs?: number; isOpenBroken?: boolean; isSipsMissing?: boolean }
 
 const engine = (on: On, ran: string[][], setup: Setup = {}) => {
   const root = setup.root ?? ROOT
@@ -44,6 +44,7 @@ const engine = (on: On, ran: string[][], setup: Setup = {}) => {
   on('fs.list', (_, e) => ({ value: dirs.get(e.path ?? '') ?? [] }))
   on('tool.call', () => ({ result: { stdout: '', stderr: '' }, text: '', ...setup.failure }))
   on('process.run', (_, e) => {
+    if (setup.isSipsMissing === true && e.argv[0] === 'sips') throw new Error('sips が無い')
     const argv = [...e.argv]
     ran.push(argv)
     const files = argv.filter(arg => arg.startsWith('/'))
@@ -265,6 +266,16 @@ test('sips が失敗したら toast で知らせる', async ($, on) => {
   await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
 
   expect(toasts).toEqual(['snapshot-gallery: 画像の大きさの取得に失敗しました: boom'])
+})
+
+test('画像を集められなくても、コマンドの結果を返して toast で知らせる', async ($, on) => {
+  const toasts: string[] = []
+  engine(on, [], { toasts, isSipsMissing: true })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+
+  const ran = await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+  expect(ran.deny).toBeUndefined()
+  expect(toasts.some(text => /^snapshot-gallery: 画像の集め直しに失敗しました: /.test(text))).toBe(true)
 })
 
 test('/snapshots は不正なセットの名前を断り、state を上書きしない', async ($, on) => {
