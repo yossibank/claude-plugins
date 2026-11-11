@@ -15,7 +15,20 @@ export const firstLineOf = (answer: string) => {
 
 export const firstLine = (answer: string) => firstLineOf(answer).line
 
-const baseName = (path: unknown) => (typeof path === 'string' ? (path.split('/').pop() ?? path) : '')
+// 同じ名前のファイルを見分けられるよう、親のフォルダまで出す
+const shortPath = (path: unknown) => (typeof path === 'string' ? path.split('/').filter(part => part !== '').slice(-2).join('/') : '')
+
+// Read の読む範囲。offset が無ければ空
+const rangeOf = (e: Args) => {
+  if (typeof e.offset !== 'number') return ''
+  return typeof e.limit === 'number' ? `:${e.offset}-${e.offset + e.limit - 1}` : `:${e.offset}-`
+}
+
+// 引数ではない、呼び出しの欄
+const META_KEYS = new Set(['tool', 'tool_use_id', 'agentId', 'consent', 'requestMeta'])
+
+// 名前を知らないツール（MCP など）は、最初の文字の引数を対象にする
+const firstText = (e: Args) => Object.entries(e).find(([key, value]) => !META_KEYS.has(key) && typeof value === 'string' && value.trim() !== '')?.[1] as string | undefined
 
 // 名前だけの 1 行。MCP のツールは最後の名前だけにする。準備中のツールにも使う
 export const toolName = (tool: string) => (tool.startsWith('mcp__') ? (tool.split('__').pop() ?? tool) : tool)
@@ -33,14 +46,20 @@ export const describe = (e: Args) => {
       case 'Bash':
         return text('description') || text('command')
       case 'Read':
+        return `${shortPath(e.file_path)}${rangeOf(e)}`
       case 'Edit':
       case 'Write':
-        return baseName(e.file_path)
+        return shortPath(e.file_path)
       case 'NotebookEdit':
-        return baseName(e.notebook_path)
-      case 'Grep':
+        return shortPath(e.notebook_path)
+      case 'Grep': {
+        const where = shortPath(e.path) || text('glob')
+        return where === '' ? text('pattern') : `${text('pattern')} in ${where}`
+      }
       case 'Glob':
         return text('pattern')
+      case 'SendMessage':
+        return text('to')
       case 'Agent':
       case 'Task':
         return text('description')
@@ -51,7 +70,7 @@ export const describe = (e: Args) => {
       case 'WebSearch':
         return text('query')
       default:
-        return ''
+        return firstText(e)?.trim() ?? ''
     }
   })()
   const name = toolName(tool)

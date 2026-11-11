@@ -1,7 +1,7 @@
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import { statusLine } from './band'
-import { claudeCard, contextCard, limitCard, repoCard, sessionCard, unmeasuredCard } from './cards'
+import { claudeCard, contextCard, limitCard, repoCard, sessionCard, tokensCard, unmeasuredCard } from './cards'
 import { draw } from './cell'
 import type { Seg } from './cell'
 import { hasSessionChanged } from './clear'
@@ -10,9 +10,9 @@ import { configure, PANE, SLACK_COLUMNS, TITLE, WATCH_MS } from './config'
 import { currentRepo, readRepo } from './git'
 import { report } from './report'
 import { cacheLeft, currentSession, endTurn, restart, watchPane } from './session'
-import { countCall, countTurn, currentStats } from './stats'
-import { currentFill, measure } from './tokens'
-import { GIT_TOOLS, QUIET_TOOLS } from './tool'
+import { countCall, countError, countTurn, currentStats } from './stats'
+import { addSpent, currentFill, currentHistory, currentSpent, measure, recordFill } from './tokens'
+import { GIT_TOOLS, QUIET_TOOLS, toolName } from './tool'
 
 let watcher: Timer | undefined
 
@@ -76,12 +76,17 @@ export const register: Register = (on, options) => {
   on('turn.step', async function* ($, e, next) {
     const stepped = yield* next(e)
     if (e.agentId === undefined) await updateModel($, e.model)
+    // トークンは、サブエージェントの分もセッションの合計に足す
+    if (stepped.usage !== null) await addSpent($, stepped.usage)
     return stepped
   })
 
   on('tool.call', async ($, e, next) => {
-    if (!QUIET_TOOLS.has(e.tool)) await countCall($)
+    const isCounted = !QUIET_TOOLS.has(e.tool)
+    if (isCounted) await countCall($, toolName(e.tool))
     const done = await next(e)
+    // 断られた・エラーを返した呼び出しを、失敗として数える
+    if (isCounted && (done.deny !== undefined || done.isError === true)) await countError($)
     if ('result' in done && GIT_TOOLS.has(e.tool)) await readRepo($)
     return done
   })
@@ -103,16 +108,18 @@ export const register: Register = (on, options) => {
     const cards: Seg[][] = []
 
     if (info !== null) cards.push(...claudeCard(info, inner))
-    if (git !== null) cards.push(...repoCard(git, inner))
+    if (git !== null) cards.push(...repoCard(git, now, inner))
     if (info !== null && info.limits.length > 0) cards.push(...limitCard(info.limits, now, inner))
 
     if (measured === null || measured.window === 0) cards.push(...unmeasuredCard(inner))
-    else cards.push(...contextCard(measured, await cacheLeft($, config), inner))
+    else cards.push(...contextCard(measured, await cacheLeft($, config), await currentHistory($), inner))
+
+    cards.push(...tokensCard(await currentSpent($), inner))
 
     const counted = await currentStats($)
     if (session.start !== null) {
       const spent = info?.usd == null ? null : info.usd - (counted.usdAtStart ?? 0)
-      cards.push(...sessionCard(now - session.start, counted.turns, counted.calls, spent, inner))
+      cards.push(...sessionCard(now - session.start, counted, spent, inner))
     }
 
     return (
@@ -127,9 +134,10 @@ export const register: Register = (on, options) => {
     // サブエージェントのターンは、メインの文脈を変えないので測り直さない
     if (e.agentId === undefined) {
       await endTurn($)
-      await countTurn($)
+      await countTurn($, e.durationMs)
       await readRepo($, true)
       await measure($)
+      await recordFill($)
     }
     return done
   })

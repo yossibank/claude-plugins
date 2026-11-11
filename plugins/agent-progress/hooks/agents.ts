@@ -1,11 +1,12 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface } from 'claude-code'
 
-import type { Running, Spent, Worker } from '../types'
+import type { Done, Running, Spent, Worker } from '../types'
 
+import { counted, NO_TALLY, recorded } from './tally'
 import { addSpent } from './usage'
 
-const workers = atom({ plugin: 'agent-progress', key: 'workers' } as const, [] as Worker[], { shape: 'workers-1' })
+const workers = atom({ plugin: 'agent-progress', key: 'workers' } as const, [] as Worker[], { shape: 'workers-2' })
 
 const FAILED = new Set(['failed', 'killed'])
 const ENDED = new Set(['completed', 'failed', 'killed'])
@@ -17,9 +18,11 @@ const blank = (id: string, startedAt: number, hue: number): Worker => ({
   startedAt,
   endedAt: null,
   status: 'running',
-  calls: 0,
+  ...NO_TALLY,
   active: [],
   last: null,
+  said: null,
+  result: null,
   hue,
   input: 0,
   output: 0,
@@ -44,7 +47,7 @@ export async function spawnWorker($: EngineInterface, id: string, type: string, 
 
 export async function startAgentCall($: EngineInterface, agentId: string, call: Running) {
   await update($, workers, list =>
-    upsert(list, agentId, call.startedAt, worker => ({ ...worker, status: 'running', endedAt: null, calls: worker.calls + 1, last: call.tool, active: [...worker.active.filter(found => found.id !== call.id), call] })),
+    upsert(list, agentId, call.startedAt, worker => ({ ...counted(worker, call.name), status: 'running', endedAt: null, last: call.tool, active: [...worker.active.filter(found => found.id !== call.id), call] })),
   )
 }
 
@@ -59,6 +62,7 @@ export async function restartWorker($: EngineInterface, agentId: string) {
       title: worker.title === '' ? (listed?.description ?? '') : worker.title,
       status: 'running',
       endedAt: null,
+      result: null,
       startedAt: worker.status === 'running' ? worker.startedAt : now,
     })),
   )
@@ -70,13 +74,20 @@ export async function addWorkerUsage($: EngineInterface, agentId: string, used: 
   await update($, workers, list => upsert(list, agentId, now, worker => addSpent(worker, used)))
 }
 
-export async function endAgentCall($: EngineInterface, agentId: string, id: string) {
+// 動いていた呼び出しを外し、直近の履歴へ足す
+export async function endAgentCall($: EngineInterface, agentId: string, id: string, done: Done) {
   const now = await $.clock.now()
-  await update($, workers, list => upsert(list, agentId, now, worker => ({ ...worker, active: worker.active.filter(found => found.id !== id) })))
+  await update($, workers, list => upsert(list, agentId, now, worker => ({ ...recorded(worker, done), active: worker.active.filter(found => found.id !== id) })))
+}
+
+// サブエージェントの今のステップの発言
+export async function sayWorker($: EngineInterface, agentId: string, said: string) {
+  const now = await $.clock.now()
+  await update($, workers, list => upsert(list, agentId, now, worker => ({ ...worker, said })))
 }
 
 // $.agent.list() の status で、終わった・失敗した・止められたを決める
-async function settle($: EngineInterface, ids: readonly string[], isForced: boolean) {
+async function settle($: EngineInterface, ids: readonly string[], isForced: boolean, result: string | null = null) {
   if (ids.length === 0) return
   const now = await $.clock.now()
   const listed = await $.agent.list().catch(() => [])
@@ -86,14 +97,14 @@ async function settle($: EngineInterface, ids: readonly string[], isForced: bool
       const status = listed.find(found => found.id === worker.id)?.status
       // 一覧に無いものは、止められて turn.complete が来なかったものとみなす
       if (!isForced && status !== undefined && !ENDED.has(status)) return worker
-      return { ...worker, status: status !== undefined && FAILED.has(status) ? 'failed' : 'done', endedAt: now, active: [] }
+      return { ...worker, status: status !== undefined && FAILED.has(status) ? 'failed' : 'done', endedAt: now, active: [], result }
     }),
   )
 }
 
-// agentId 付きの turn.complete で終わりにする
-export async function finishWorker($: EngineInterface, agentId: string) {
-  await settle($, [agentId], true)
+// agentId 付きの turn.complete で終わりにする。result は報告の最初の行
+export async function finishWorker($: EngineInterface, agentId: string, result: string | null) {
+  await settle($, [agentId], true, result)
 }
 
 // メインのターンが終わった時、止められたり失敗したりして turn.complete が来なかったものを拾う
