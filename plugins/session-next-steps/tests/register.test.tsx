@@ -424,6 +424,28 @@ test('書き換えた後は、この会話で前に走らせた確かめるコ�
   expect(await rows($)).toEqual([expect.stringMatching(/^npm run test:unit を走らせて/), '隠す'])
 })
 
+test('確かめるコマンドは、当たった区切りの字ごと勧める', async ($, on) => {
+  engine(on, { branch: 'feat/x' })
+
+  await $.tool.call({ tool: 'Bash', command: 'xcodebuild -scheme App   test 2>&1 | tail -5' })
+  await edit($, '/repo/a.ts')
+  await finish($)
+
+  expect(await rows($)).toEqual([expect.stringMatching(/^xcodebuild -scheme App test 2>&1 を走らせて/), '隠す'])
+})
+
+test('新しい会話では、前の会話の確かめるコマンドを勧めない', async ($, on) => {
+  engine(on, { branch: 'feat/x' })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.tool.call({ tool: 'Bash', command: 'npm run test:unit' })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await edit($, '/repo/a.ts')
+  await finish($)
+
+  expect(await rows($)).toEqual([expect.stringMatching(/^make test を走らせて/), '隠す'])
+})
+
 test('askModel を切っている時は、モデルに尋ねない', async ($, on) => {
   const seen = engine(on, { status: ' M a.ts\n' })
   await finish($, '終わった')

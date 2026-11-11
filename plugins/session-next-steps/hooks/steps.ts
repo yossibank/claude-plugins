@@ -14,14 +14,17 @@ export type Facts = { repo: Repo | null; percent: number | null }
 // 引用の中の字（commit の文や echo の文）を、コマンドとして当てない
 const unquoted = (command: string) => command.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, '')
 
-// コマンドの区切りごとに当て、当たった字を返す。当たらなければ undefined
-export const checkOf = (command: string, check: RegExp) => {
+// コマンドの区切りごとに当て、当たった字と、その区切りの字を返す。当たらなければ undefined
+// 区切りは、もう一度走らせるよう勧める時に使う。引用の中の字は外れる
+export const matchOf = (command: string, check: RegExp) => {
   for (const segment of unquoted(command).split(/&&|\|\||[;|\n]/)) {
     const hit = segment.match(check)
-    if (hit !== null) return hit[0].trim() || segment.trim()
+    if (hit !== null) return { label: hit[0].trim() || segment.trim(), segment: segment.trim().replace(/\s+/g, ' ') }
   }
   return undefined
 }
+
+export const checkOf = (command: string, check: RegExp) => matchOf(command, check)?.label
 
 // スラッシュコマンド（/Users/… のようなパスは除く）か、! で始まるシェルのコマンド
 const isCommand = (text: string) => /^\/[a-z][\w:-]*(?:\s|$)/i.test(text) || /^!\s*\S/.test(text)

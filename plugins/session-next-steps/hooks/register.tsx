@@ -6,7 +6,7 @@ import type { Step } from '../types'
 import { optionsOf } from './config'
 import type { Options } from './config'
 import { gather } from './facts'
-import { askedOf, askingOf, checkOf, choose, cut, pad, saidOf, widthOf } from './steps'
+import { askedOf, askingOf, choose, cut, matchOf, pad, saidOf, widthOf } from './steps'
 import type { Turn } from './steps'
 
 const EDIT_TOOLS = ['Edit', 'MultiEdit', 'Write', 'NotebookEdit']
@@ -84,13 +84,17 @@ export const register: Register = (on, raw) => {
   const local: Local = { isBroken, isTold: false, turn: fresh(), generation: 0, knownPrs: new Set(), lastCheck: null }
 
   on('session.start', async ($, e, next) => {
+    local.lastCheck = null
     await clear($, local)
     return next(e)
   })
 
-  // /clear のあとは、前の会話の候補を残さない
+  // /clear のあとは、前の会話の候補と確かめるコマンドを残さない
   on('session.end', async ($, e, next) => {
-    if (e.reason === 'clear') await clear($, local).catch(report($, '帯を消すこと'))
+    if (e.reason === 'clear') {
+      local.lastCheck = null
+      await clear($, local).catch(report($, '帯を消すこと'))
+    }
     return next(e)
   })
 
@@ -114,11 +118,11 @@ export const register: Register = (on, raw) => {
     if (e.agentId !== undefined) return ran
     if (e.tool === 'Bash') {
       tell($, local)
-      const label = checkOf(e.command, options.check)
+      const hit = matchOf(e.command, options.check)
       // 断られたコマンドは、走っていないので数えない
-      if (label !== undefined && ran.deny === undefined) {
-        local.turn = { ...local.turn, check: { label, isFailed: ran.isError === true }, edited: [] }
-        local.lastCheck = label
+      if (hit !== undefined && ran.deny === undefined) {
+        local.turn = { ...local.turn, check: { label: hit.label, isFailed: ran.isError === true }, edited: [] }
+        local.lastCheck = hit.segment
       }
     } else if (EDIT_TOOLS.includes(e.tool) && ran.deny === undefined && ran.isError !== true) {
       const input = e as { file_path?: unknown; notebook_path?: unknown }
