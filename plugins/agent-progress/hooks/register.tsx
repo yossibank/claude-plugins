@@ -14,7 +14,7 @@ import { TN } from './palette'
 import { report } from './report'
 import { SPRITE_COLUMNS, SPRITE_ROWS, spriteCells } from './sprite'
 import { currentTasks, trackTasks } from './tasks'
-import { describe, firstLine, QUIET_TOOLS, toolName } from './tool'
+import { describe, firstLine, firstLineOf, QUIET_TOOLS, toolName } from './tool'
 import type { Args } from './tool'
 import { addMainUsage, currentTurn, endTurn, spentOf, startTurn } from './usage'
 import { mainCard, sectionLine, tasksLines, workerCard } from './view'
@@ -79,6 +79,8 @@ export const register: Register = on => {
     const stream = next(e)
     let text = ''
     let said: string | null = null
+    // 最初の行が閉じたら、届いた全文を読み直さない
+    let isSaid = false
     let isThinking = false
     let stepped: Awaited<typeof stream.result> | undefined
     try {
@@ -93,9 +95,10 @@ export const register: Register = on => {
         if (chunk.kind === 'thinking' && isMain && !isThinking && (await currentRunning($)).length === 0) {
           isThinking = true
           await act($, { phase: 'thinking' })
-        } else if (chunk.kind === 'text' && isMain) {
+        } else if (chunk.kind === 'text' && isMain && !isSaid) {
           text += chunk.text
-          const line = firstLine(text)
+          const { line, isClosed } = firstLineOf(text)
+          isSaid = isClosed
           if (line !== null && line !== said) {
             said = line
             await act($, { said, ...((await currentRunning($)).length === 0 && isThinking ? { phase: 'done' as Phase } : {}) })

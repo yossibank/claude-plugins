@@ -120,12 +120,13 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
+    // サブエージェントのターンは、メインの文脈を変えないので測り直さない
     if (e.agentId === undefined) {
       await endTurn($)
       await countTurn($)
       await readRepo($, true)
+      await measure($)
     }
-    await measure($)
     return done
   })
 

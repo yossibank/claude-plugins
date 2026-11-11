@@ -26,7 +26,7 @@ type State = {
 
 const engine = (on: On, percent: number, window = 200000, isShown = false, state: State = { isUsageBroken: false }) => {
   const clock = mock.clock(on, { now: T0 })
-  const counts = { panes: 0 }
+  const counts = { panes: 0, breakdowns: 0 }
   const toasts: string[] = []
   // /clear で替わるセッションの id。テストが書き換える
   const session = { id: 's1' }
@@ -55,7 +55,8 @@ const engine = (on: On, percent: number, window = 200000, isShown = false, state
     const stdout = GIT[e.argv.slice(1, 3).join(' ')] ?? '/repo\n'
     return { value: { exitCode: 0, stdout, stderr: '' } as never }
   })
-  on('session.usage', () => {
+  on('session.usage', (_, e) => {
+    if ((e as { breakdown?: string }).breakdown === 'summary') counts.breakdowns += 1
     if (state.isUsageBroken) return { deny: 'usage failed' }
     return {
     value: {
@@ -289,6 +290,17 @@ test('options: キャッシュの寿命が数でなければ、既定の 60 分�
   await clock.advance(6 * MINUTE)
 
   expect((await lines($)).some(line => /· . 54m ─╯$/u.test(line))).toBe(true)
+})
+
+test('サブエージェントのターンが終わっても、文脈を測り直さない', async ($, on) => {
+  const { counts } = engine(on, 41)
+  await start($)
+  const before = counts.breakdowns
+  await $.turn.complete(done('t2', 'a1'))
+  expect(counts.breakdowns).toBe(before)
+
+  await $.turn.complete(done())
+  expect(counts.breakdowns).toBe(before + 1)
 })
 
 test('usage が失敗したら前の値を残す', async ($, on) => {

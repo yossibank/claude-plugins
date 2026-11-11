@@ -3,7 +3,6 @@ import type { EngineInterface } from 'claude-code'
 
 import type { Fill } from '../types'
 
-
 const fill = atom({ plugin: 'session-dashboard', key: 'fill' } as const, null, { shape: 'fill-2' })
 
 const GRADES = [

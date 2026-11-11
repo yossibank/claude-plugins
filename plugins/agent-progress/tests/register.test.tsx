@@ -2,6 +2,7 @@ import { expect, mock, test, type TestBody } from 'claude-code/testing'
 
 import { cellWidth } from '../hooks/cell'
 import { FRAMES, SPRITE_COLUMNS, spriteCells } from '../hooks/sprite'
+import { firstLineOf } from '../hooks/tool'
 
 type On = Parameters<TestBody>[1]
 type Engine = Parameters<TestBody>[0]
@@ -101,6 +102,12 @@ test('sprite: 立つコマは Claude Code のロゴと同じ字で、色を前�
   expect(FRAMES.every(frame => frame.every(row => [...row].length === SPRITE_COLUMNS))).toBe(true)
   const bytes = Uint8Array.from(atob(spriteCells(0, '#d77757')), char => char.charCodeAt(0))
   expect(new Uint32Array(bytes.buffer)[1]).toBe(0xd77757)
+})
+
+test('firstLineOf: 記号を外した最初の行と、その行が改行で閉じたかを返す', async () => {
+  expect(firstLineOf('\n## 直し')).toEqual({ line: '直し', isClosed: false })
+  expect(firstLineOf('## 直します\n続き')).toEqual({ line: '直します', isClosed: true })
+  expect(firstLineOf('  \n')).toEqual({ line: null, isClosed: false })
 })
 
 test('pane: 待っている間は、メインのカードを灰色の止まったアイコンで出す', async ($, on) => {
