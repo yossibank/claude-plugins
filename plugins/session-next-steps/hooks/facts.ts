@@ -62,6 +62,7 @@ async function repoOf($: EngineInterface, cwd: string, knownPrs: Set<string>): P
     unpushed,
     isPushed,
     isDefault,
+    hasRemote,
     hasPr,
   }
 }

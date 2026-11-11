@@ -1,7 +1,7 @@
 {
   "name": "session-next-steps",
-  "version": "0.1.0",
-  "description": "ターンが終わるたびに、テスト・commit・push・PR・区切りから次にすることを 3 つまで選び、入力欄の上にボタンで出す",
+  "version": "0.2.0",
+  "description": "ターンが終わるたびに、返事が勧めたコマンド・テスト・commit・PR・区切りから次にすることを 3 つまで選び、入力欄の上にボタンで出す。モデルに選ばせることもできる",
   "author": {
     "name": "yossibank"
   },
@@ -30,6 +30,18 @@
       "title": "区切りを勧める文脈の割合",
       "description": "文脈の埋まり具合がこの割合（%）以上の時に、/handoff を勧める",
       "default": 70
+    },
+    "prOnDefault": {
+      "type": "boolean",
+      "title": "既定のブランチでは PR を勧める",
+      "description": "既定のブランチに未 commit の変更か push していない commit がある時に、commit と push の代わりに「PR にして」を勧める。リモートが無いリポジトリでは効かない",
+      "default": true
+    },
+    "askModel": {
+      "type": "boolean",
+      "title": "モデルに選ばせる",
+      "description": "ターンの終わりに、会話の続きとしてモデルに次の一手を尋ねる。会話の流れと CLAUDE.md に沿った候補になるが、ターンごとに 1 回モデルを呼ぶ。尋ねられない時は規則の候補を出す",
+      "default": false
     }
   }
 }

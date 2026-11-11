@@ -48,7 +48,7 @@
     {
       "name": "session-next-steps",
       "source": "./plugins/session-next-steps",
-      "description": "ターンが終わるたびに、テスト・commit・push・PR・区切りから次にすることを 3 つまで選び、入力欄の上にボタンで出す"
+      "description": "ターンが終わるたびに、返事が勧めたコマンド・テスト・commit・PR・区切りから次にすることを 3 つまで選び、入力欄の上にボタンで出す。モデルに選ばせることもできる"
     }
   ]
 }
