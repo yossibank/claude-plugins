@@ -9,7 +9,7 @@ import { drawPane } from './pane'
 
 // 設定が空か壊れている時の値。plugin.json の userConfig の default と同じにしておく
 const DEFAULTS = { threshold: 75, handoffPath: '.claude/handoff.md' }
-const PANE = 'handoff'
+const PANE = 'session-handoff'
 const TITLE = '🤝 Handoff'
 const LABELS = ['会話を読む', '触ったファイル', 'メモを書く', '保存して確かめる']
 // メモを書く段の棒は、前の回にかかった時間を目安に伸ばす。終わるまでは 9 割で止める

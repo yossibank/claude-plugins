@@ -15,7 +15,7 @@ const PANE = (surface: 'terminal' | 'desktop') =>
   ({
     plugin: 'session-handoff',
     component: 'Pane',
-    requestId: 'handoff',
+    requestId: 'session-handoff',
     surface,
     props: { title: '🤝 Handoff', isFocused: true, bodyColumns: 50, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
   }) as const
@@ -170,7 +170,7 @@ test('/handoff で、ペインを開き、触ったファイルを渡してメ�
   await $.command.run(HANDOFF)
   await settle()
 
-  expect(seen.opened).toEqual(['handoff'])
+  expect(seen.opened).toEqual(['session-handoff'])
   expect(seen.files.get('/repo/.claude/handoff.md')).toBe(MEMO)
   expect(seen.files.get('/repo/.gitignore')).toBe('node_modules/\n.claude/handoff.md\n')
   expect(seen.prompts).toHaveLength(1)
@@ -251,7 +251,7 @@ test('できた後の /handoff は、書き直さずにペインを開き直す'
   await settle()
 
   expect(seen.prompts).toHaveLength(1)
-  expect(seen.opened).toEqual(['handoff', 'handoff'])
+  expect(seen.opened).toEqual(['session-handoff', 'session-handoff'])
 })
 
 for (const surface of ['terminal', 'desktop'] as const) {
@@ -279,7 +279,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.unmount()
     await settle()
 
-    expect(seen.closed).toContain('handoff')
+    expect(seen.closed).toContain('session-handoff')
     expect(seen.commands).toContain('clear')
     expect(seen.fills).toEqual([resumeOf(MEMO)])
   })
@@ -290,7 +290,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
     await $.turn.complete(TURN)
     await settle()
-    expect(seen.opened).toEqual(['handoff'])
+    expect(seen.opened).toEqual(['session-handoff'])
     const ui = await $.ui.mount(PANE(surface))
     expect((await ui.find({ type: 'Text', text: /引き継ぎどき/ }))?.text).toContain('引き継ぎどき')
     expect((await ui.find({ type: 'Text', text: /^80%$/ }))?.text).toBe('80%')
@@ -303,7 +303,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
     await $.turn.complete(TURN)
     await settle()
-    expect(seen.opened).toEqual(['handoff'])
+    expect(seen.opened).toEqual(['session-handoff'])
   })
 }
 
@@ -330,7 +330,7 @@ test('失敗した後に閉じるを押したら、その会話では勧めな�
   await $.turn.complete(TURN)
   await settle()
 
-  expect(seen.opened).toEqual(['handoff'])
+  expect(seen.opened).toEqual(['session-handoff'])
 })
 
 test('閾値より下なら勧めない', async ($, on) => {
