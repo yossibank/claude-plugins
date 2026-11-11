@@ -8,7 +8,7 @@
 
 | 場面 | 決まり |
 | --- | --- |
-| 変更した | `make verify` と `make test` を通す |
+| 変更した | `make verify` と `make test` を通す。PR と main への push では、GitHub Actions も同じ 2 つを回す |
 | `make verify` | `claude plugin validate` と version の上げ忘れを見る。description も、marketplace.json と plugin.json で比べる。`userConfig` の `default` が、コードの `DEFAULTS` に同じ値であるかも見る |
 | `make types` | `tsc` で型を見る。`tsc` と、Claude Code が作る型が要るので、`make verify` には入れない |
 | 型の検査が NG | `plugins/<名前>/.claude-plugin/types/` は Claude Code が読み込んだ時に作る。無い時は `claude --plugin-dir plugins/<名前>` で一度読み込む |
