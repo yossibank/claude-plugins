@@ -1,6 +1,7 @@
 import { expect, mock, test, type TestBody } from 'claude-code/testing'
 
 import { cellWidth } from '../hooks/cell'
+import { dayOf } from '../hooks/daily'
 
 type On = Parameters<TestBody>[1]
 
@@ -32,14 +33,29 @@ type State = {
   usage?: Record<string, unknown>
   // エラーを返すツールの名前
   failing?: string
+  // store に初めから入っている値。鍵はローカルの日付
+  stored?: Record<string, unknown>
+  isStoreBroken?: boolean
 }
 
-const engine = (on: On, percent: number, window = 200000, isShown = false, state: State = { isUsageBroken: false }) => {
-  const clock = mock.clock(on, { now: T0 })
+const engine = (on: On, percent: number, window = 200000, isShown = false, state: State = { isUsageBroken: false }, now = T0) => {
+  const clock = mock.clock(on, { now })
   const counts = { panes: 0, breakdowns: 0 }
   const toasts: string[] = []
   // /clear で替わるセッションの id。テストが書き換える
   const session = { id: 's1' }
+  // プラグインの store。テストが書き換えて、ほかのセッションの書き込みを真似る
+  const store: Record<string, unknown> = { ...state.stored }
+  on('store.keys', () => (state.isStoreBroken === true ? { deny: 'store failed' } : { value: Object.keys(store) }))
+  on('store.get', (_, e) => ({ value: store[e.key] }))
+  on('store.set', (_, e) => {
+    store[e.key] = JSON.parse(JSON.stringify(e.value))
+    return { value: undefined } as never
+  })
+  on('store.delete', (_, e) => {
+    delete store[e.key]
+    return { value: undefined } as never
+  })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.id', () => ({ value: session.id }))
   on('session.cwd', () => ({ value: '/repo/sub' }))
@@ -104,7 +120,7 @@ const engine = (on: On, percent: number, window = 200000, isShown = false, state
   on('turn.step', async function* (_, e) {
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: state.usage ?? null } as never
   })
-  return { clock, counts, toasts, session }
+  return { clock, counts, toasts, session, store }
 }
 
 const start = ($: Parameters<TestBody>[0]) => $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
@@ -604,4 +620,154 @@ test('/clear で、トークンの合計と文脈の推移を忘れる', async (
   session.id = 's2'
   await $.classic.SessionStart({ source: 'clear' })
   expect((await lines($)).some(line => /Tokens|推移/.test(line))).toBe(false)
+})
+
+const DAY = 24 * 60 * MINUTE
+const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土']
+const USAGE = { input_tokens: 1200, cache_read_input_tokens: 40000, cache_creation_input_tokens: 7000, output_tokens: 3100, model: 'claude-opus-5-5' }
+
+// 1 回の応答（入力 48,200・出力 3,100）の後に、費用を usd にして、メインのターンを終える
+const turn = async ($: Engine, turnId: string, usd?: number) => {
+  await $.turn.start({ turnId, text: 'go' })
+  for await (const _ of $.turn.step({ turnId, index: 0, model: 'claude-opus-5-5', messageCount: 1 })) void _
+  if (usd !== undefined) await $.session.measure({ context: { window: 200000 }, rateLimits: [], cost: { usd }, changed: ['cost'] } as never)
+  await $.turn.complete(done(turnId))
+}
+
+test('Daily: 今日と直近 7 日の合計、平均、日ごとの棒と曜日を出し、今日の棒は色を変える', async ($, on) => {
+  const stored = { [dayOf(T0 - DAY)]: { usd: 2, input: 100000, output: 5000 } }
+  const { store } = engine(on, 41, 200000, false, { isUsageBroken: false, usage: USAGE, stored })
+  await start($)
+  // 今日の分が無くても、ほかの日があれば出す
+  expect((await lines($)).some(line => /^│ today │ \$0\.00 · in 0 · out 0 +│$/u.test(line))).toBe(true)
+
+  // 始めた時の $1.236 から $1.00 増えた
+  await turn($, 't1', 2.236)
+
+  expect(store[dayOf(T0)]).toEqual({ usd: 1, input: 48200, output: 3100 })
+  const found = await lines($)
+  expect(found.some(line => /^╭─ . Daily ─+╮$/u.test(line))).toBe(true)
+  expect(found.some(line => /^│ today │ \$1\.00 · in 48k · out 3k +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /^│ week {2}│ \$3\.00 · in 148k · out 8k +│$/u.test(line))).toBe(true)
+  // 使った 2 日で割った平均は $1.50。今日の $1.00 はその 0.7 倍
+  expect(found.some(line => /^│ avg {3}│ \$1\.50\/日 · 平均の 0\.7 倍 +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /^│ days {2}│ ▁▁ ▁▁ ▁▁ ▁▁ ▁▁ ██ ▅▅ +│$/u.test(line))).toBe(true)
+  expect(found.some(line => new RegExp(`^│ {7}│ (?:. ){6}${WEEKDAYS[new Date(T0).getDay()]} +│$`, 'u').test(line))).toBe(true)
+  const ui = await $.ui.mount(PANE)
+  expect((await ui.find({ type: 'Text', text: /^▅▅$/ }))?.props?.color).toBe('#ff9e64')
+  expect((await ui.find({ type: 'Text', text: /^██$/ }))?.props?.color).toBe('#7aa2f7')
+  await ui.unmount()
+})
+
+test('Daily: 直近 7 日に何も無ければ表を出さず、14 日より古い日は store から消す', async ($, on) => {
+  const stored = { [dayOf(T0 - 13 * DAY)]: { usd: 1, input: 10, output: 1 }, [dayOf(T0 - 14 * DAY)]: { usd: 1, input: 10, output: 1 }, other: 'x' }
+  const { store } = engine(on, 41, 200000, false, { isUsageBroken: false, stored })
+  await start($)
+  await $.turn.complete(done())
+
+  expect((await lines($)).some(line => /Daily|today/.test(line))).toBe(false)
+  expect(Object.keys(store).sort()).toEqual([dayOf(T0 - 13 * DAY), 'other'].sort())
+})
+
+test('Daily: 描き直しても、ターンが続けて終わっても、増えた分だけを足す', async ($, on) => {
+  const { store } = engine(on, 41, 200000, false, { isUsageBroken: false, usage: USAGE })
+  await start($)
+  await turn($, 't1', 2.236)
+  await lines($)
+  await lines($)
+  await $.turn.complete(done('t2'))
+  await $.turn.complete(done('t3'))
+  expect(store[dayOf(T0)]).toEqual({ usd: 1, input: 48200, output: 3100 })
+
+  await turn($, 't4', 2.486)
+  expect(store[dayOf(T0)]).toEqual({ usd: 1.25, input: 96400, output: 6200 })
+})
+
+test('Daily: 日付が変わったら、増えた分を新しい日に足し、前の日は変えない', async ($, on) => {
+  // 時計を進める重さは進めた時間に比例するので、どのタイムゾーンでもローカルの 23 時 50 分から始め、0 時 1 分まで進める
+  const day = new Date(T0)
+  const from = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 23, 50).getTime()
+  const { clock, store } = engine(on, 41, 200000, false, { isUsageBroken: false, usage: USAGE }, from)
+  await start($)
+  await turn($, 't1', 2.236)
+  const next = from + 11 * MINUTE
+  await clock.advance(next - clock.now())
+  await turn($, 't2', 2.736)
+
+  expect(dayOf(next)).not.toBe(dayOf(from))
+  expect(store[dayOf(from)]).toEqual({ usd: 1, input: 48200, output: 3100 })
+  expect(store[dayOf(next)]).toEqual({ usd: 0.5, input: 48200, output: 3100 })
+  const found = await lines($)
+  expect(found.some(line => /^│ today │ \$0\.50 · in 48k · out 3k +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /^│ week {2}│ \$1\.50 · in 96k · out 6k +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /^│ days {2}│ ▁▁ ▁▁ ▁▁ ▁▁ ▁▁ ██ ▅▅ +│$/u.test(line))).toBe(true)
+})
+
+test('Daily: /clear でセッションの合計が 0 に戻っても減らさず、その後に増えた分だけを足す', async ($, on) => {
+  const { session, store } = engine(on, 41, 200000, false, { isUsageBroken: false, usage: USAGE })
+  await start($)
+  await turn($, 't1', 2.236)
+  session.id = 's2'
+  await $.classic.SessionStart({ source: 'clear' })
+  await $.turn.complete(done('t2'))
+  expect(store[dayOf(T0)]).toEqual({ usd: 1, input: 48200, output: 3100 })
+
+  // 費用が 0 に戻ると、増えた分は負になる。足さずに、0 から数え直す
+  await $.session.measure({ context: { window: 200000 }, rateLimits: [], cost: { usd: 0 }, changed: ['cost'] } as never)
+  await $.turn.complete(done('t3'))
+  expect(store[dayOf(T0)]).toEqual({ usd: 1, input: 48200, output: 3100 })
+
+  await turn($, 't4', 0.5)
+  expect(store[dayOf(T0)]).toEqual({ usd: 1.5, input: 96400, output: 6200 })
+})
+
+test('Daily: ほかのセッションが store に足した値を消さずに、その上に足す', async ($, on) => {
+  const { store } = engine(on, 41, 200000, false, { isUsageBroken: false, usage: USAGE })
+  await start($)
+  await turn($, 't1', 2.236)
+
+  // ほかのセッションが、今日と昨日に足した
+  store[dayOf(T0)] = { usd: 6, input: 1048200, output: 13100 }
+  store[dayOf(T0 - DAY)] = { usd: 3, input: 500000, output: 20000 }
+  await turn($, 't2', 2.736)
+
+  expect(store[dayOf(T0)]).toEqual({ usd: 6.5, input: 1096400, output: 16200 })
+  expect(store[dayOf(T0 - DAY)]).toEqual({ usd: 3, input: 500000, output: 20000 })
+  const found = await lines($)
+  expect(found.some(line => /^│ today │ \$6\.50 · in 1\.1M · out 16k +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /^│ week {2}│ \$9\.50 · in 1\.6M · out 36k +│$/u.test(line))).toBe(true)
+  expect(found.some(line => /平均の 1\.4 倍/.test(line))).toBe(true)
+})
+
+test('Daily: 狭ければ、すき間、棒の太さと曜日の順に落として幅に収める', async ($, on) => {
+  const stored = { [dayOf(T0 - DAY)]: { usd: 2, input: 100000, output: 5000 }, [dayOf(T0)]: { usd: 1, input: 48200, output: 3100 } }
+  engine(on, 41, 200000, false, { isUsageBroken: false, stored })
+  await start($)
+
+  for (const columns of [46, 30, 22]) for (const line of await lines($, columns)) expect(cells(line)).toBe(columns - 2)
+  const middle = await lines($, 30)
+  expect(middle.some(line => /^│ days {2}│ ▁▁▁▁▁▁▁▁▁▁██▅▅ +│$/u.test(line))).toBe(true)
+  expect(middle.some(line => new RegExp(`^│ {7}│ .{6}${WEEKDAYS[new Date(T0).getDay()]} +│$`, 'u').test(line))).toBe(true)
+  const narrow = await lines($, 22)
+  expect(narrow.some(line => /^│ days {2}│ ▁▁▁▁▁█▅ +│$/u.test(line))).toBe(true)
+  expect(narrow.some(line => /^│ {7}│/u.test(line))).toBe(false)
+
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 12 } })
+  const texts = (await ui.findAll({ type: 'Text' })).map(element => element.text)
+  await ui.unmount()
+  expect(texts.some(text => /^today \$1/.test(text))).toBe(true)
+  for (const text of texts) expect(cells(text)).toBeLessThanOrEqual(10)
+})
+
+test('Daily: store に失敗したらトーストで知らせ、直ったら足せなかった分も足す', async ($, on) => {
+  const state: State = { isUsageBroken: false, usage: USAGE, isStoreBroken: true }
+  const { store, toasts } = engine(on, 41, 200000, false, state)
+  await start($)
+  await turn($, 't1', 2.236)
+  expect(toasts.some(text => /日ごとの合計の保存.*store failed/.test(text))).toBe(true)
+  expect(store[dayOf(T0)]).toBeUndefined()
+
+  state.isStoreBroken = false
+  await turn($, 't2', 2.736)
+  expect(store[dayOf(T0)]).toEqual({ usd: 1.5, input: 96400, output: 6200 })
 })

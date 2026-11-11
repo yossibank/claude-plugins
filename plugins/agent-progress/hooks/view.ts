@@ -120,7 +120,7 @@ const mixLines = (tally: Tally, width: number): Seg[][] => {
 }
 
 // トークン・ツールの回数・失敗の数と、その下に内訳
-const statLines = (spent: Spent, tally: Tally, hasTools: boolean, width: number): Seg[][] => [...packed([spentSegs(spent), ...countSegs(tally, hasTools)], width), ...mixLines(tally, width)]
+const statLines = (spent: Spent, tally: Tally, hasTools: boolean, width: number, extra: Seg[] = []): Seg[][] => [...packed([spentSegs(spent), ...countSegs(tally, hasTools), extra], width), ...mixLines(tally, width)]
 
 // メインとサブエージェントを足した合計。サブエージェントがいる間だけ出す
 export const totalLines = (turn: MainTurn, tally: Tally, workers: readonly Worker[], width: number): Seg[][] => {
@@ -129,6 +129,9 @@ export const totalLines = (turn: MainTurn, tally: Tally, workers: readonly Worke
   const all = workers.reduce((sum, worker) => ({ ...sum, calls: sum.calls + worker.calls, errors: sum.errors + worker.errors }), tally)
   return packed([[{ text: `Σ 合計 ${workers.length + 1} 体`, color: TN.magenta, bold: true }], spentSegs(spent), ...countSegs(all, true)], width)
 }
+
+// 許可の確認を待った時間の合計。1 秒に満たなければ空
+const askedSegs = (ms: number): Seg[] => (ms < 1000 ? [] : [{ text: `許可待ち 計 ${duration(ms)}`, color: TN.yellow }])
 
 // 止まっているメインの、名前の右に出す終わり方
 const endSegs = (turn: MainTurn, elapsed: string): Seg[] => {
@@ -149,6 +152,11 @@ export const mainCard = (doing: Activity, step: Step | null, calls: readonly Run
   const shown = doing.isWorking && own.length >= 2 ? groupStep(own, now) : live
   const elapsed = turn.startedAt === null ? '' : duration((turn.endedAt ?? now) - turn.startedAt)
   const state: Seg[] = doing.isWorking ? [{ text: elapsed, color: TN.comment }] : endSegs(turn, elapsed)
+  const name = nameSegs({ text: 'Claude', color: CLAUDE, bold: true }, turn.model)
+  // ターンの終わりの行に、許可の確認を待った時間の合計を添える。名前と並ばない幅では、下の行に分ける
+  const asked = doing.isWorking || turn.endedAt === null ? [] : askedSegs(turn.askedMs)
+  const joined = asked.length === 0 ? state : [...state, SEPARATOR, ...asked]
+  const isJoined = segWidth(name) + 1 + segWidth(joined) <= width
   return {
     key: 'main',
     color: doing.isWorking ? CLAUDE : IDLE,
@@ -156,7 +164,8 @@ export const mainCard = (doing: Activity, step: Step | null, calls: readonly Run
     // 自分のツールがあればその動き、サブエージェントを待つだけならヘディング
     action: doing.isWorking ? actionOf(own.length > 0 ? own : calls) : turn.endedAt === null || turn.end === 'aborted' ? 'idle' : turn.end === 'error' ? 'failed' : 'done',
     lines: [
-      twoColumns(nameSegs({ text: 'Claude', color: CLAUDE, bold: true }, turn.model), state, width),
+      twoColumns(name, isJoined ? joined : state, width),
+      ...(isJoined || asked.length === 0 ? [] : wrapSegs(asked, width)),
       ...wrapSegs([{ text: summary ?? '—', color: doing.isWorking ? TN.fg : TN.comment }], width),
       ...(doing.isWorking ? recentLines(tally, shown === null ? RECENT_SHOWN + 1 : RECENT_SHOWN, width) : []),
       // 手の要約はターンの外でも動くので、作業中でなくても出す
@@ -196,7 +205,8 @@ export const workerCard = (worker: Worker, now: number, width: number): Card => 
       twoColumns(nameSegs({ text: worker.type === '' ? 'agent' : worker.type, color: TN.cyan, bold: true }, worker.model), [{ text: duration((worker.endedAt ?? now) - worker.startedAt), color: TN.comment }], width),
       ...wrapSegs([{ text: worker.title === '' ? '—' : worker.title, color: isRunning ? TN.fg : TN.fgDark }], width),
       ...workerSteps(worker, now, width),
-      ...statLines(worker, worker, true, width),
+      // 終わったサブエージェントには、許可の確認を待った時間の合計を添える
+      ...statLines(worker, worker, true, width, isRunning ? [] : askedSegs(worker.askedMs)),
     ],
   }
 }

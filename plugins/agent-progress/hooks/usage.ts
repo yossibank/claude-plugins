@@ -3,8 +3,8 @@ import type { EngineInterface, TurnUsage } from 'claude-code'
 
 import type { MainTurn, Spent, TurnEnd } from '../types'
 
-const NO_TURN: MainTurn = { startedAt: null, endedAt: null, input: 0, output: 0, model: '' }
-const turn = atom({ plugin: 'agent-progress', key: 'turn' } as const, NO_TURN)
+const NO_TURN: MainTurn = { startedAt: null, endedAt: null, input: 0, output: 0, model: '', askedMs: 0 }
+const turn = atom({ plugin: 'agent-progress', key: 'turn' } as const, NO_TURN, { shape: 'turn-2' })
 
 // usage を、キャッシュの分も含めた入力と出力にまとめる
 export const spentOf = (usage: TurnUsage): Spent => ({
@@ -31,6 +31,11 @@ export async function startTurn($: EngineInterface) {
 
 export async function addMainUsage($: EngineInterface, used: Spent) {
   await update($, turn, now => addSpent(now, used))
+}
+
+// メインのツールが、許可の確認を待った時間を足す
+export async function addMainAsked($: EngineInterface, ms: number) {
+  await update($, turn, now => ({ ...now, askedMs: now.askedMs + ms }))
 }
 
 export async function endTurn($: EngineInterface, end: TurnEnd) {

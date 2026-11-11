@@ -1,12 +1,13 @@
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import { statusLine } from './band'
-import { claudeCard, contextCard, limitCard, repoCard, sessionCard, tokensCard, unmeasuredCard } from './cards'
+import { claudeCard, contextCard, dailyCard, limitCard, repoCard, sessionCard, tokensCard, unmeasuredCard } from './cards'
 import { draw } from './cell'
 import type { Seg } from './cell'
 import { hasSessionChanged } from './clear'
 import { currentClaude, limitsOf, readClaude, updateLimits, updateModel } from './claude'
 import { configure, PANE, SLACK_COLUMNS, TITLE, WATCH_MS } from './config'
+import { addToday, currentDays } from './daily'
 import { currentRepo, readRepo } from './git'
 import { report } from './report'
 import { cacheLeft, currentSession, endTurn, restart, watchPane } from './session'
@@ -16,8 +17,13 @@ import { GIT_TOOLS, QUIET_TOOLS, toolName } from './tool'
 
 let watcher: Timer | undefined
 
+// このセッションで増えた分を store の今日の値に足す。失敗しても、呼んだ側の処理は止めない
+const keepToday = ($: EngineInterface) => addToday($).catch(error => report($, '日ごとの合計の保存', error))
+
 // セッションの初めの値に戻し、Claude とリポジトリを読み直す
 const renew = async ($: EngineInterface) => {
+  // 戻す前に、まだ足していない分を今日の値に足す。store の日ごとの値を読むのもここ
+  await keepToday($)
   await restart($)
   await readClaude($)
   await readRepo($, true)
@@ -122,6 +128,8 @@ export const register: Register = (on, options) => {
       cards.push(...sessionCard(now - session.start, counted, spent, inner))
     }
 
+    cards.push(...dailyCard(await currentDays($), now, inner))
+
     return (
       <Box flexDirection="column" paddingX={1} paddingTop={1}>
         {cards.map((line, index) => draw(Text, line, String(index)))}
@@ -138,6 +146,7 @@ export const register: Register = (on, options) => {
       await readRepo($, true)
       await measure($)
       await recordFill($)
+      await keepToday($)
     }
     return done
   })

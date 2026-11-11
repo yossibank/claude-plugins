@@ -4,6 +4,7 @@ import type { EngineInterface, Timer } from 'claude-code'
 import type { Action, Activity, Running } from '../types'
 
 import { clearWorkers, currentWorkers } from './agents'
+import { forgetAsks } from './asks'
 import { PANE } from './config'
 import { TN } from './palette'
 import { report } from './report'
@@ -118,6 +119,7 @@ export async function forget($: EngineInterface) {
   await clearWorkers($)
   await resetTurn($)
   await resetTally($)
+  forgetAsks()
   tickWhileRunning($, false)
   await update($, activity, () => IDLE)
 }

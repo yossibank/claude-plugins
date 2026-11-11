@@ -6,14 +6,34 @@
   },
   "plugins": [
     {
-      "name": "pr-browser",
-      "source": "./plugins/pr-browser",
-      "description": "gh pr create で PR を作ったら、terminal-browser で PR のページを右に開く"
+      "name": "agent-progress",
+      "source": "./plugins/agent-progress",
+      "description": "メインとサブエージェントが今していることを、動く Claude のアイコン付きのカードで右の pane に出す。作業の一覧の進みも出す"
     },
     {
-      "name": "snapshot-gallery",
-      "source": "./plugins/snapshot-gallery",
+      "name": "git-pr-browser",
+      "source": "./plugins/git-pr-browser",
+      "description": "gh pr create で PR を作ったら terminal-browser でページを開き、今のブランチの PR の CI・レビュー・未解決のコメントを入力欄の上に出す"
+    },
+    {
+      "name": "ios-build-progress",
+      "source": "./plugins/ios-build-progress",
+      "description": "ビルドのコマンドの間、進みの棒と警告とエラーを入力欄の上に出し、終わったらトーストで知らせる"
+    },
+    {
+      "name": "ios-simulator-dashboard",
+      "source": "./plugins/ios-simulator-dashboard",
+      "description": "起動中の iOS シミュレータ・アプリの状態と、この会話でシミュレータにした操作の履歴と回数を、右の pane に出す"
+    },
+    {
+      "name": "ios-snapshot-gallery",
+      "source": "./plugins/ios-snapshot-gallery",
       "description": "make snapshot で描いた PNG を、直す前と後で左右に並べて pane に出す"
+    },
+    {
+      "name": "ios-test-progress",
+      "source": "./plugins/ios-test-progress",
+      "description": "テストのコマンドの間、進みの棒と落ちたテストを入力欄の上に出し、終わったらトーストで知らせる"
     },
     {
       "name": "session-dashboard",
@@ -21,19 +41,14 @@
       "description": "モデル・版・費用・リポジトリ・利用の上限・文脈の埋まり具合・セッションの経過を右の pane に出し、閉じている間は入力欄の上に出す。キャッシュが切れるまでの時間も出す"
     },
     {
-      "name": "test-progress",
-      "source": "./plugins/test-progress",
-      "description": "テストのコマンドの間、進みの棒と落ちたテストを入力欄の上に出し、終わったらトーストで知らせる"
-    },
-    {
-      "name": "handoff",
-      "source": "./plugins/handoff",
+      "name": "session-handoff",
+      "source": "./plugins/session-handoff",
       "description": "文脈が埋まってきたら右のペインで引き継ぎを勧め、引き継ぎメモを書いて、新しい会話へ渡す"
     },
     {
-      "name": "agent-progress",
-      "source": "./plugins/agent-progress",
-      "description": "メインとサブエージェントが今していることを、動く Claude のアイコン付きのカードで右の pane に出す。作業の一覧の進みも出す"
+      "name": "session-next-steps",
+      "source": "./plugins/session-next-steps",
+      "description": "ターンが終わるたびに、テスト・commit・push・PR・区切りから次にすることを 3 つまで選び、入力欄の上にボタンで出す"
     }
   ]
 }

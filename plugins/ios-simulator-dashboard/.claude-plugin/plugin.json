@@ -1,0 +1,29 @@
+{
+  "name": "ios-simulator-dashboard",
+  "version": "0.1.0",
+  "description": "起動中の iOS シミュレータ・アプリの状態と、この会話でシミュレータにした操作の履歴と回数を、右の pane に出す",
+  "author": {
+    "name": "yossibank"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "bundleId": {
+      "type": "string",
+      "title": "アプリの bundle ID",
+      "description": "入っているか・動いているかを出すアプリ。空なら、アプリの行を出さない",
+      "default": ""
+    },
+    "refreshSeconds": {
+      "type": "number",
+      "title": "取り直す間隔（秒）",
+      "description": "pane が出ている間、シミュレータの状態を取り直す間隔",
+      "default": 10
+    },
+    "autoOpen": {
+      "type": "boolean",
+      "title": "自動で開く",
+      "description": "シミュレータのツールかコマンドを初めて使った時に、pane を開く",
+      "default": false
+    }
+  }
+}

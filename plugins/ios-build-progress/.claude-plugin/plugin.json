@@ -1,0 +1,59 @@
+{
+  "name": "ios-build-progress",
+  "version": "0.1.0",
+  "description": "ビルドのコマンドの間、進みの棒と警告とエラーを入力欄の上に出し、終わったらトーストで知らせる",
+  "author": {
+    "name": "yossibank"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "commandPattern": {
+      "type": "string",
+      "title": "見張るコマンドの正規表現",
+      "description": "Bash のコマンドの区切りごとに当てる正規表現。当たった文字を帯とトーストに出す",
+      "default": "\\bxcodebuild\\b(?!.*\\s(?:test|test-without-building|-list|-version|-showsdks|-showBuildSettings|-showdestinations|-exportArchive|-resolvePackageDependencies|-help)(?=\\s|$))|\\bmake\\b(?!.*\\stest(?=\\s|$))(?:.*\\s)?build(?=\\s|$)"
+    },
+    "logPath": {
+      "type": "string",
+      "title": "ログの置き場",
+      "description": "コマンドを動かすフォルダからの相対パス。絶対パスも使える。コマンドが tee で書き込む先",
+      "default": ".build/build.log"
+    },
+    "targetLine": {
+      "type": "string",
+      "title": "ターゲットの行の正規表現",
+      "description": "一致した行から今のターゲットを読む。空でない最初の組が名前",
+      "default": "^=== BUILD TARGET (.+?) OF PROJECT|^Build target (.+?)(?: of project| with configuration|$)|\\(in target \\W(.+?)\\W from project|^\\[([^\\]]+)\\] \\S"
+    },
+    "stepLine": {
+      "type": "string",
+      "title": "手順の行の正規表現",
+      "description": "一致した行を 1 手順と数える",
+      "default": "^(?:CompileSwift|SwiftCompile|CompileSwiftSources|SwiftDriver|SwiftEmitModule|CompileC|CompileAssetCatalog|CompileStoryboard|CompileXIB|LinkStoryboards|Ld|Libtool|CodeSign|CpResource|Copy|CopySwiftLibs|ProcessInfoPlistFile|PhaseScriptExecution|GenerateDSYMFile|Touch|Validate)\\s|^\\[[^\\]]+\\] [A-Z][a-z]+\\s"
+    },
+    "warningLine": {
+      "type": "string",
+      "title": "警告の行の正規表現",
+      "description": "一致した行を警告として数える。同じ行は 1 回だけ数える",
+      "default": "(?:^|\\s)warning: |^\\s*⚠"
+    },
+    "errorLine": {
+      "type": "string",
+      "title": "エラーの行の正規表現",
+      "description": "一致した行をエラーとして数える。ファイルと行があれば添えて出す",
+      "default": "(?:^|\\s)error: |^\\s*❌"
+    },
+    "finishedLine": {
+      "type": "string",
+      "title": "終わった行の正規表現",
+      "description": "一致したらログが終わったと見なす",
+      "default": "\\*\\* (?:BUILD|ARCHIVE) (?:SUCCEEDED|FAILED) \\*\\*|\\b(?:Build|Archive) (?:Succeeded|Failed)\\b"
+    },
+    "succeededLine": {
+      "type": "string",
+      "title": "成功した行の正規表現",
+      "description": "終わった行のあと、これに一致したら成功。一致しなければ失敗",
+      "default": "BUILD SUCCEEDED|ARCHIVE SUCCEEDED|Build Succeeded|Archive Succeeded"
+    }
+  }
+}

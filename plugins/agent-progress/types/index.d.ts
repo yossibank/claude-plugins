@@ -35,11 +35,11 @@ export type WorkerStatus = 'running' | 'done' | 'failed'
 // 1 ターンで使ったトークン。input はキャッシュから読んだ分と書いた分を含む
 export type Spent = { input: number; output: number; model: string }
 
-// メインの今のターン。endedAt は終わるまで null
-export type MainTurn = Spent & { startedAt: number | null; endedAt: number | null; end?: TurnEnd }
+// メインの今のターン。endedAt は終わるまで null。askedMs は許可の確認を待った時間の合計
+export type MainTurn = Spent & { startedAt: number | null; endedAt: number | null; end?: TurnEnd; askedMs: number }
 
 // Agent で起こしたサブエージェント 1 本。active はその中で動いているツール、last は最後に始めたツール、hue はアイコンの色の番号
-// said は今のステップの発言の最初の行、result は終わった時の報告の最初の行
+// said は今のステップの発言の最初の行、result は終わった時の報告の最初の行、askedMs は許可の確認を待った時間の合計
 export type Worker = Spent & Tally & {
   id: string
   type: string
@@ -52,6 +52,7 @@ export type Worker = Spent & Tally & {
   said: string | null
   result: string | null
   hue: number
+  askedMs: number
 }
 
 declare module 'claude-code' {
@@ -63,7 +64,7 @@ declare module 'claude-code' {
       running: Shaped<Running[]>
       workers: Shaped<Worker[]>
       isPaneShown: boolean
-      turn: MainTurn
+      turn: Shaped<MainTurn>
       tally: Tally
     }
   }

@@ -3,7 +3,8 @@ import type { EngineInterface, Register, Timer } from 'claude-code'
 import type { Phase, TurnEnd } from '../types'
 
 import { act, animate, clearCalls, currentActivity, currentFrame, currentRunning, currentSecond, endCall, forget, phaseLine, refreshTicker, startCall } from './activity'
-import { addWorkerUsage, currentWorkers, dropFinished, endAgentCall, finishWorker, reconcileWorkers, restartWorker, sayWorker, spawnWorker, startAgentCall } from './agents'
+import { addWorkerAsked, addWorkerUsage, currentWorkers, dropFinished, endAgentCall, finishWorker, reconcileWorkers, restartWorker, sayWorker, spawnWorker, startAgentCall } from './agents'
+import { closeAsk, noteAsk, noteRan, openAsk } from './asks'
 import { workingLine } from './band'
 import { draw } from './cell'
 import type { Seg } from './cell'
@@ -17,7 +18,7 @@ import { countCall, currentTally, recordCall, resetTally } from './tally'
 import { currentTasks, trackTasks } from './tasks'
 import { describe, firstLine, firstLineOf, QUIET_TOOLS, toolName } from './tool'
 import type { Args } from './tool'
-import { addMainUsage, currentTurn, endTurn, spentOf, startTurn } from './usage'
+import { addMainAsked, addMainUsage, currentTurn, endTurn, spentOf, startTurn } from './usage'
 import { mainCard, sectionLine, tasksLines, totalLines, workerCard } from './view'
 import type { Card } from './view'
 
@@ -38,6 +39,15 @@ let resetting: Promise<void> = Promise.resolve()
 const followSession = async ($: EngineInterface) => {
   if (await hasSessionChanged($)) resetting = forget($).catch(error => report($, 'セッションの切り替え', error))
   await resetting
+}
+
+// ツールが終わった時刻は、下の hook が動く前に読む。duration_ms は、許可の確認と hook の時間を除いた、ツールが動いた時間
+const ran = async ($: EngineInterface, e: { tool_use_id: string; duration_ms?: number }) => {
+  try {
+    noteRan(e.tool_use_id, e.duration_ms, await $.clock.now())
+  } catch (error) {
+    report($, 'ツールが動いた時間を読むこと', error)
+  }
 }
 
 export const register: Register = on => {
@@ -171,18 +181,62 @@ export const register: Register = on => {
       else await act($, { tool: call.tool, phase: 'done' })
       await refreshTicker($)
     }
+    // 許可の確認を待った時間を、メインのターンかサブエージェントに足す
+    const settleAsk = async () => {
+      if (e.tool_use_id === undefined) return
+      const asked = closeAsk(e.tool_use_id, isError, await $.clock.now())
+      if (asked <= 0) return
+      if (e.agentId === undefined) await addMainAsked($, asked)
+      else await addWorkerAsked($, e.agentId, asked)
+    }
     const done = await next(e)
       .then(answered => {
         isError = answered.deny !== undefined || answered.isError === true
         return answered
       })
-      .finally(() => settle().catch(error => report($, 'ツールの後始末', error)))
+      .finally(() =>
+        settleAsk()
+          .catch(error => report($, '許可待ちの集計', error))
+          .then(settle)
+          .catch(error => report($, 'ツールの後始末', error)),
+      )
     // 作業の一覧は、メインのものだけを追う
     if ('result' in done && e.agentId === undefined) {
       await trackTasks($, args, done.result)
       if (QUIET_TOOLS.has(e.tool)) await act($, {})
     }
     return done
+  })
+
+  // 許可の確認は見るだけにする。答えは next(e) のものをそのまま返し、見るのに失敗しても確認を止めない
+  on('tool.check', async ($, e, next) => {
+    const verdict = await next(e)
+    try {
+      if (verdict.decision === 'ask' && e.tool_use_id !== undefined) noteAsk(e.tool_use_id, e.tool, e.agentId, e.input)
+    } catch (error) {
+      report($, '許可の確認を覚えること', error)
+    }
+    return verdict
+  })
+
+  on('classic.PermissionRequest', async ($, e, next) => {
+    const answered = await next(e)
+    try {
+      openAsk(e.tool_name, e.agent_id, e.tool_input, await $.clock.now())
+    } catch (error) {
+      report($, '許可の確認の始まりを書くこと', error)
+    }
+    return answered
+  })
+
+  on('classic.PostToolUse', async ($, e, next) => {
+    await ran($, e)
+    return next(e)
+  })
+
+  on('classic.PostToolUseFailure', async ($, e, next) => {
+    await ran($, e)
+    return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {

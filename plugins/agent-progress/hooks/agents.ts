@@ -6,7 +6,7 @@ import type { Done, Running, Spent, Worker } from '../types'
 import { counted, NO_TALLY, recorded } from './tally'
 import { addSpent } from './usage'
 
-const workers = atom({ plugin: 'agent-progress', key: 'workers' } as const, [] as Worker[], { shape: 'workers-2' })
+const workers = atom({ plugin: 'agent-progress', key: 'workers' } as const, [] as Worker[], { shape: 'workers-3' })
 
 const FAILED = new Set(['failed', 'killed'])
 const ENDED = new Set(['completed', 'failed', 'killed'])
@@ -27,6 +27,7 @@ const blank = (id: string, startedAt: number, hue: number): Worker => ({
   input: 0,
   output: 0,
   model: '',
+  askedMs: 0,
 })
 
 // 見つからなければ足し、あれば change を当てる。tool.call が agent.spawn の戻りより先に来ても追える
@@ -72,6 +73,12 @@ export async function restartWorker($: EngineInterface, agentId: string) {
 export async function addWorkerUsage($: EngineInterface, agentId: string, used: Spent) {
   const now = await $.clock.now()
   await update($, workers, list => upsert(list, agentId, now, worker => addSpent(worker, used)))
+}
+
+// サブエージェントのツールが、許可の確認を待った時間を足す
+export async function addWorkerAsked($: EngineInterface, agentId: string, ms: number) {
+  const now = await $.clock.now()
+  await update($, workers, list => upsert(list, agentId, now, worker => ({ ...worker, askedMs: worker.askedMs + ms })))
 }
 
 // 動いていた呼び出しを外し、直近の履歴へ足す
