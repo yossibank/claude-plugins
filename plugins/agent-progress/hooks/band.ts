@@ -10,7 +10,8 @@ export const workingLine = (doing: Activity, step: Step | null, workers: readonl
   const summary = doing.task ?? doing.said
   const running = workers.filter(worker => worker.status === 'running').length
   const working: Seg[] = []
-  if (doing.isWorking && (summary !== null || step !== null)) {
+  // 手の要約はターンの外でも動くので、作業中でなくても出す
+  if ((doing.isWorking || doing.phase === 'compacting') && (summary !== null || step !== null)) {
     // 作業の名前が無ければ、実行の印を行の頭の ● にする
     if (summary !== null) working.push({ text: '● ', color: MOON.yellow }, { text: summary, color: MOON.fg })
     if (summary !== null && step !== null) working.push({ text: ' │ ', color: MOON.comment })

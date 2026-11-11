@@ -159,7 +159,8 @@ export const mainCard = (doing: Activity, step: Step | null, calls: readonly Run
       twoColumns(nameSegs({ text: 'Claude', color: CLAUDE, bold: true }, turn.model), state, width),
       ...wrapSegs([{ text: summary ?? '—', color: doing.isWorking ? TN.fg : TN.comment }], width),
       ...(doing.isWorking ? recentLines(tally, shown === null ? RECENT_SHOWN + 1 : RECENT_SHOWN, width) : []),
-      ...(doing.isWorking && shown !== null ? wrapSegs(stepSegs(shown), width) : []),
+      // 手の要約はターンの外でも動くので、作業中でなくても出す
+      ...((doing.isWorking || doing.phase === 'compacting') && shown !== null ? wrapSegs(stepSegs(shown), width) : []),
       ...statLines(turn, tally, tally.calls > 0, width),
     ],
   }

@@ -53,7 +53,7 @@ export async function measure($: EngineInterface) {
   await update($, fill, () => measured)
 }
 
-// メインのターンの終わりごとの、文脈のトークン数。新しい順に HISTORY_KEPT 回分
+// メインのターンの終わりごとの、文脈のトークン数。古い順に、直近 HISTORY_KEPT 回分
 const HISTORY_KEPT = 16
 const history = atom({ plugin: 'session-dashboard', key: 'history' } as const, [] as number[])
 

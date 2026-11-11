@@ -516,6 +516,16 @@ test('pane: 会話を要約している間は、メインのカードにそう�
   expect((await paneOf($)).texts).toContain('会話を要約しています…')
 })
 
+test('pane: ターンの外で手で要約している間も、メインのカードにそう出す', async ($, on) => {
+  const compacting = new Promise<never>(() => {})
+  engine(on, { compacting })
+  await start($)
+  void $.session.compact({ trigger: 'manual', messages: [] } as never)
+  await Promise.resolve()
+
+  expect((await paneOf($)).texts).toContain('会話を要約しています…')
+})
+
 test('入力欄の上: 作業の一覧があれば、済みの数を添える', async ($, on) => {
   engine(on)
   await start($)
