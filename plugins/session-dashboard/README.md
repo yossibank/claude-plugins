@@ -19,6 +19,12 @@
 
 今の作業とサブエージェントは [agent-progress](../agent-progress/README.md) に移った。
 
+## 📦 入れ方
+
+```sh
+/plugin install session-dashboard --marketplace yossibank/claude-plugins
+```
+
 ## 🚀 コマンド
 
 | コマンド | 中身 |

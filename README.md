@@ -31,7 +31,7 @@ flowchart LR
 
 | 道具 | バージョン | 使う所 |
 | --- | --- | --- |
-| Claude Code | 2.1.319 | プラグインの実行、`claude plugin validate`、`claude plugin test` |
+| Claude Code | 2.1.322 | プラグインの実行、`claude plugin validate`、`claude plugin test` |
 | TypeScript | 5.4 以上 | `make types` での型の検査 |
 | jq | 最新 | `make verify` の version と description の検査 |
 | terminal-browser | 最新 | pr-browser |

@@ -11,6 +11,12 @@
 | 見分ける | 画像ごとに、変更・同じ・新規を出す。画像の下に、描いた日時を出す |
 | 失敗を知らせる | 写しや入れ替えに失敗した時と、pane を開けなかった時は、トーストで知らせる |
 
+## 📦 入れ方
+
+```sh
+/plugin install snapshot-gallery --marketplace yossibank/claude-plugins
+```
+
 ## 🚀 使い方
 
 | 操作 | 動き |

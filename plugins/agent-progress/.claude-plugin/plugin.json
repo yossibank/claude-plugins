@@ -2,5 +2,8 @@
   "name": "agent-progress",
   "version": "0.1.1",
   "description": "メインとサブエージェントが今していることを、動く Claude のアイコン付きのカードで右の pane に出す。作業の一覧の進みも出す",
+  "author": {
+    "name": "yossibank"
+  },
   "types": "./types/index.d.ts"
 }
