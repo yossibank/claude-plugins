@@ -20,7 +20,9 @@ const pr = atom({ plugin: 'git-pr-browser', key: 'pr' } as const, null, { shape:
 
 let columns: number | undefined
 let poller: Timer | undefined
-let isFetching = false
+// 走っている取り直しと、その間に来た頼み。頼みは捨てずに、終わった後にもう一度走らせる
+let running: Promise<void> | undefined
+let queued: { target?: string } | undefined
 
 const pollMs = (options: Readonly<Record<string, unknown>>) => {
   const seconds = Number(options.pollSeconds)
@@ -34,34 +36,47 @@ const gh = ($: EngineInterface, cwd: string, args: string[]) =>
     .then(ran => (ran.exitCode === 0 ? ran.stdout : null))
     .catch(() => null)
 
-// PR の状態を取り直す。target が無ければ、今のブランチの PR を探す。見つからなければ帯を消す
-async function refresh($: EngineInterface, wait: number, target?: string) {
-  if (isFetching) return
-  isFetching = true
-  try {
-    const cwd = await $.session.cwd()
-    const viewed = await gh($, cwd, ['pr', 'view', ...(target === undefined ? [] : [target]), '--json', FIELDS])
-    const found = viewed === null ? null : parsePr(viewed)
-    const old = await read($, pr)
-    if (found === null) {
-      // 作った直後の URL を見失った時は、前の値を残す
-      if (target === undefined) await update($, pr, () => null)
-      return
-    }
-    const repo = repoOf(found.url)
-    const threads = repo === null ? null : await gh($, cwd, ['api', 'graphql', '-f', `query=${THREADS}`, '-F', `owner=${repo.owner}`, '-F', `repo=${repo.repo}`, '-F', `number=${found.number}`])
-    const now: Pr = { ...found, unresolved: threads === null ? null : unresolvedOf(threads) }
-    await update($, pr, () => now)
-    for (const line of newsOf(old, now)) $.ui.toast(line.slice(0, 120))
-    // CI が終わるまでは、決めた間隔で取り直す
-    const isWaiting = now.state === 'OPEN' && now.checks.pending > 0
-    if (isWaiting && poller === undefined) poller = $.clock.every(wait, () => later($, wait))
-    if (!isWaiting) {
+// 取り直す。走っている間に来た頼みは、終わった後に走らせ、その終わりを待つ。target のある頼みを残す
+function refresh($: EngineInterface, wait: number, target?: string): Promise<void> {
+  if (running !== undefined) {
+    queued = { target: target ?? queued?.target }
+    return running.then(() => running)
+  }
+  running = fetchPr($, wait, target).finally(() => {
+    running = undefined
+    const again = queued
+    queued = undefined
+    if (again !== undefined) later($, wait, again.target)
+  })
+  return running
+}
+
+// PR の状態を取り直す。target が無ければ、今のブランチの PR を探す。見つからなければ帯を消し、取り直しも止める
+async function fetchPr($: EngineInterface, wait: number, target?: string) {
+  const cwd = await $.session.cwd()
+  const viewed = await gh($, cwd, ['pr', 'view', ...(target === undefined ? [] : [target]), '--json', FIELDS])
+  const found = viewed === null ? null : parsePr(viewed)
+  const old = await read($, pr)
+  if (found === null) {
+    // 作った直後の URL を見失った時は、前の値を残す
+    if (target === undefined) {
+      await update($, pr, () => null)
       poller?.cancel()
       poller = undefined
     }
-  } finally {
-    isFetching = false
+    return
+  }
+  const repo = repoOf(found.url)
+  const threads = repo === null ? null : await gh($, cwd, ['api', 'graphql', '-f', `query=${THREADS}`, '-F', `owner=${repo.owner}`, '-F', `repo=${repo.repo}`, '-F', `number=${found.number}`])
+  const now: Pr = { ...found, unresolved: threads === null ? null : unresolvedOf(threads) }
+  await update($, pr, () => now)
+  for (const line of newsOf(old, now)) $.ui.toast(line.slice(0, 120))
+  // CI が終わるまでは、決めた間隔で取り直す
+  const isWaiting = now.state === 'OPEN' && now.checks.pending > 0
+  if (isWaiting && poller === undefined) poller = $.clock.every(wait, () => later($, wait))
+  if (!isWaiting) {
+    poller?.cancel()
+    poller = undefined
   }
 }
 

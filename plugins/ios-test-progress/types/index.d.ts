@@ -10,6 +10,8 @@ export type TestRun = {
   slow: { name: string; seconds: number }[]
   // 前の回に落ちたテストの名前。前の回が無ければ null
   lastFailed: string[] | null
+  // 前の回に落ちて、今回通ったテストの名前
+  fixed: string[]
   // 最後に結果が出たテストの名前。まだ無ければ空
   latest: string
   // ログが最後に変わった時刻。動きが止まっている時間を出すのに使う

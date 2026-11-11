@@ -420,3 +420,14 @@ test('前の回が無ければ、直った数も新しく落ちた数も出さ�
   expect(seen.toasts).toEqual(['✖ make test 1 本落ちた（1 本通った）· 0:00'])
   expect(seen.store.get('failed:make test')).toEqual(['monthTotalsSkipFuture()'])
 })
+
+test('今回走らなかったテストは直ったと数えず、落ちた名前として覚えておく', async ($, on) => {
+  const seen = fresh()
+  seen.store.set('failed:make test', ['fixedNow()', 'notRun()'])
+  engine(on, '    ✔ fixedNow() (0.2 seconds)\n    ✖ fresh(), boom\nTest Failed\n', seen)
+
+  await $.tool.call({ tool: 'Bash', command: 'make test' })
+
+  expect(seen.toasts).toEqual(['✖ make test 1 本落ちた（1 本通った）· 0:00 · 直った 1 · 新しく落ちた 1'])
+  expect(seen.store.get('failed:make test')).toEqual(['notRun()', 'fresh()'])
+})

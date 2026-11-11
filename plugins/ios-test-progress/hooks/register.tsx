@@ -105,6 +105,7 @@ const count = (raw: string, spec: Watched) => {
   const plain = raw.replace(ANSI, '')
   let passed = 0
   let latest = ''
+  const passedNames = new Set<string>()
   const failed: string[] = []
   const reasons: Record<string, string> = {}
   const timed = new Map<string, number>()
@@ -120,6 +121,7 @@ const count = (raw: string, spec: Watched) => {
       // 通った行から印を外し、後ろの「(0.012 seconds)」を落として名前にする
       const name = line.replace(spec.passed, '').replace(/\s+\(\d[^)]*\)\s*$/, '').trim()
       latest = name || latest
+      if (name !== '') passedNames.add(name)
       time(name, line)
     }
     const hit = line.match(spec.failed)
@@ -144,7 +146,7 @@ const count = (raw: string, spec: Watched) => {
     .sort((a, b) => b[1] - a[1])
     .slice(0, SHOWN_SLOW)
     .map(([name, seconds]) => ({ name, seconds }))
-  return { passed, failed, reasons, slow, latest, isFinished: lines.some(line => spec.finished.test(line)), isSucceeded: lines.some(line => spec.succeeded.test(line)) }
+  return { passed, passedNames, failed, reasons, slow, latest, isFinished: lines.some(line => spec.finished.test(line)), isSucceeded: lines.some(line => spec.succeeded.test(line)) }
 }
 
 const clock = (ms: number) => {
@@ -160,11 +162,12 @@ const finish = async ($: EngineInterface, id: string, isPassed: boolean, isLearn
     await $.store.set(`total:${last.label}`, last.passed + last.failed.length)
     await $.store.set(`durationMs:${last.label}`, took)
   }
-  // 落ちた名前は、次の回に「直った」「新しく落ちた」を出すために、落ちた回も覚える
-  if (last.passed + last.failed.length >= 1) await $.store.set(`failed:${last.label}`, last.failed)
+  // 落ちた名前は、次の回に「直った」「新しく落ちた」を出すために、落ちた回も覚える。今回走らなかった前の失敗は残す
+  const kept = (last.lastFailed ?? []).filter(name => !last.fixed.includes(name) && !last.failed.includes(name))
+  if (last.passed + last.failed.length >= 1) await $.store.set(`failed:${last.label}`, [...kept, ...last.failed])
   await drop($, id)
   const before = last.lastMs === null ? '' : `（前回 ${clock(last.lastMs)}）`
-  const fixed = (last.lastFailed ?? []).filter(name => !last.failed.includes(name)).length
+  const fixed = last.fixed.length
   const fresh = last.lastFailed === null ? 0 : last.failed.filter(name => !last.lastFailed?.includes(name)).length
   const change = `${fixed > 0 ? ` · 直った ${fixed}` : ''}${fresh > 0 ? ` · 新しく落ちた ${fresh}` : ''}`
   const slow = last.slow.length === 0 ? '' : ` · 遅い: ${last.slow.map(one => `${one.name.slice(0, 24)} ${one.seconds.toFixed(1)}s`).join('、')}`
@@ -195,7 +198,7 @@ const tick = async ($: EngineInterface, id: string, spec: Watched, log: string, 
     return idle()
   }
   const counted = count(await $.fs.read(log), spec)
-  await put($, id, old => ({ ...old, now, passed: counted.passed, failed: counted.failed, reasons: counted.reasons, slow: counted.slow, latest: counted.latest, changedAt: pulse.changedAt, isWritten: true }))
+  await put($, id, old => ({ ...old, now, passed: counted.passed, failed: counted.failed, fixed: (old.lastFailed ?? []).filter(name => counted.passedNames.has(name)), reasons: counted.reasons, slow: counted.slow, latest: counted.latest, changedAt: pulse.changedAt, isWritten: true }))
   if (counted.isFinished) return counted.isSucceeded ? 'passed' : 'failed'
   return idle()
 }
@@ -217,6 +220,7 @@ const watch = async ($: EngineInterface, spec: Watched, log: string, label: stri
       reasons: {},
       slow: [],
       lastFailed: Array.isArray(lastFailed) ? lastFailed.filter((name): name is string => typeof name === 'string') : null,
+      fixed: [],
       latest: '',
       changedAt: startedAt,
       total: typeof total === 'number' ? total : null,

@@ -250,3 +250,33 @@ test('/pr で状態を取り直し、ページを開く', async ($, on) => {
   expect(ran).toMatchObject({ text: 'PR #346 を開きました。' })
   expect(opened).toEqual([['terminal-browser', 'open', URL, '--split', 'right']])
 })
+
+test('取り直しの途中に来た /pr は、捨てずに終わりを待って答える', async ($, on) => {
+  mock.clock(on, { now: 0 })
+  const opened: string[][] = []
+  setup(on, '', opened, { view: () => VIEW({ statusCheckRollup: [] }) })
+
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const ran = await $.command.run({ command: 'pr', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 140 } })
+
+  expect(ran).toMatchObject({ text: 'PR #346 を開きました。' })
+})
+
+test('CI を待つ間に PR を見失ったら、取り直しを止める', async ($, on) => {
+  const clock = mock.clock(on, { now: 0 })
+  let hasPr = true
+  const asked: string[][] = []
+  setup(on, `${URL}\n`, [], { view: () => (hasPr ? VIEW() : null), gh: asked })
+  beneath(on)
+
+  await $.tool.call({ tool: 'Bash', command: `${CREATE} --title t` })
+  await settle()
+  hasPr = false
+  await clock.advance(60_000)
+  await settle()
+  const seen = asked.length
+  await clock.advance(180_000)
+  await settle()
+
+  expect(asked.length).toBe(seen)
+})
