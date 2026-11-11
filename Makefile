@@ -1,8 +1,8 @@
-.PHONY: verify validate types versions descriptions test
+.PHONY: verify validate types versions descriptions defaults test
 
 verify:
 	@failed=0; \
-	for target in validate versions descriptions; do \
+	for target in validate versions descriptions defaults; do \
 		$(MAKE) --no-print-directory $$target || failed=1; \
 	done; \
 	exit $$failed
@@ -42,6 +42,16 @@ descriptions:
 	done; \
 	[ $$failed -eq 0 ] || exit 1; \
 	echo "OK description の一致"
+
+defaults:
+	@out=$$(for dir in plugins/*/; do \
+		jq -r '.userConfig // {} | to_entries[] | .key, (if (.value.default | type) == "string" then "'"'"'" + (.value.default | tojson | .[1:-1]) + "'"'"'" else (.value.default | tostring) end)' "$$dir.claude-plugin/plugin.json" | \
+		while read -r key && read -r value; do \
+			grep -qF -- "$$key: $$value" "$$dir"hooks/*.ts* || echo "NG $$dir の $${key} の既定値がコードの DEFAULTS に無い（$${value}）"; \
+		done; \
+	done); \
+	[ -z "$$out" ] || { echo "$$out"; exit 1; }; \
+	echo "OK userConfig の既定値とコードの一致"
 
 test:
 	@failed=0; \
