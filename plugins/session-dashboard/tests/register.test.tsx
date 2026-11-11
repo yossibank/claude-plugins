@@ -38,8 +38,8 @@ type State = {
   isStoreBroken?: boolean
 }
 
-const engine = (on: On, percent: number, window = 200000, isShown = false, state: State = { isUsageBroken: false }) => {
-  const clock = mock.clock(on, { now: T0 })
+const engine = (on: On, percent: number, window = 200000, isShown = false, state: State = { isUsageBroken: false }, now = T0) => {
+  const clock = mock.clock(on, { now })
   const counts = { panes: 0, breakdowns: 0 }
   const toasts: string[] = []
   // /clear で替わるセッションの id。テストが書き換える
@@ -684,17 +684,18 @@ test('Daily: 描き直しても、ターンが続けて終わっても、増え�
 })
 
 test('Daily: 日付が変わったら、増えた分を新しい日に足し、前の日は変えない', async ($, on) => {
-  const { clock, store } = engine(on, 41, 200000, false, { isUsageBroken: false, usage: USAGE })
+  // 時計を進める重さは進めた時間に比例するので、どのタイムゾーンでもローカルの 23 時 50 分から始め、0 時 1 分まで進める
+  const day = new Date(T0)
+  const from = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 23, 50).getTime()
+  const { clock, store } = engine(on, 41, 200000, false, { isUsageBroken: false, usage: USAGE }, from)
   await start($)
   await turn($, 't1', 2.236)
-  // ローカルの次の日の 0 時 1 分まで進める。見張りのタイマーが多いので、4 時間ずつ刻む
-  const from = new Date(T0)
-  const next = new Date(from.getFullYear(), from.getMonth(), from.getDate() + 1).getTime() + MINUTE
-  while (clock.now() < next) await clock.advance(Math.min(4 * 60 * MINUTE, next - clock.now()))
+  const next = from + 11 * MINUTE
+  await clock.advance(next - clock.now())
   await turn($, 't2', 2.736)
 
-  expect(dayOf(next)).not.toBe(dayOf(T0))
-  expect(store[dayOf(T0)]).toEqual({ usd: 1, input: 48200, output: 3100 })
+  expect(dayOf(next)).not.toBe(dayOf(from))
+  expect(store[dayOf(from)]).toEqual({ usd: 1, input: 48200, output: 3100 })
   expect(store[dayOf(next)]).toEqual({ usd: 0.5, input: 48200, output: 3100 })
   const found = await lines($)
   expect(found.some(line => /^│ today │ \$0\.50 · in 48k · out 3k +│$/u.test(line))).toBe(true)
