@@ -1,0 +1,23 @@
+{
+  "name": "session-handoff",
+  "version": "0.2.0",
+  "description": "文脈が埋まってきたら右のペインで引き継ぎを勧め、引き継ぎメモを書いて、新しい会話へ渡す",
+  "author": {
+    "name": "yossibank"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "threshold": {
+      "type": "number",
+      "title": "知らせる埋まり具合（%）",
+      "description": "要約に入る手前までの窓に対する割合。これを超えたら、右のペインを開いて引き継ぎを勧める",
+      "default": 75
+    },
+    "handoffPath": {
+      "type": "string",
+      "title": "メモの置き場",
+      "description": "リポジトリの一番上からの相対パス。絶対パスも使える",
+      "default": ".claude/handoff.md"
+    }
+  }
+}

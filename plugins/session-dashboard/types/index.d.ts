@@ -26,6 +26,15 @@ export type Stats = { turns: number; calls: number; usdAtStart: number | null; t
 // セッションで使ったトークンの合計。メインとサブエージェントを足す
 export type Spent = { input: number; output: number; cacheRead: number; cacheWrite: number }
 
+// 1 日に使った費用（USD）とトークン。このマシンの全セッションの合算。input はキャッシュの読み書きも足す
+export type Day = { usd: number; input: number; output: number }
+
+// 鍵はローカルの日付（YYYY-MM-DD）
+export type Days = Record<string, Day>
+
+// 前に store へ足した時点の、このセッションの合計。usd は費用が分かるまで null
+export type Counted = { usd: number | null; input: number; output: number }
+
 declare module 'claude-code' {
   interface PluginState {
     'session-dashboard': {
@@ -39,6 +48,8 @@ declare module 'claude-code' {
       stats: Shaped<Stats>
       spent: Spent
       history: number[]
+      days: Shaped<Days>
+      counted: Shaped<Counted | null>
     }
   }
 }

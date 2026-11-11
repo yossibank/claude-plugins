@@ -1,9 +1,10 @@
-import type { Claude, Fill, Limit, Repo, Spent, Stats } from '../types'
+import type { Claude, Day, Days, Fill, Limit, Repo, Spent, Stats } from '../types'
 
 import { card, changeSegs, keyWidthOf, valueWidth } from './card'
 import { cellWidth, gradient } from './cell'
 import type { Seg } from './cell'
 import { LIMIT_NAMES } from './claude'
+import { lastDays, NO_DAY } from './daily'
 import { blend, heat, HEAT, ICON, TN } from './palette'
 import { agoOf, durationOf, elapsedOf, paceOf, untilReset } from './time'
 import { gradeOf, growthOf, kilo, thousands } from './tokens'
@@ -22,6 +23,10 @@ const SPARKS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
 const FEW_TURNS = 3
 // Session の表に名前を出すツールの数
 const TOOLS_SHOWN = 3
+// Daily の表に出す日数
+const DAYS_SHOWN = 7
+// 曜日の字（2 マス）に合わせた、日ごとの棒の幅
+const DAY_COLUMNS = 2
 
 const dot: Seg = { text: ' · ', color: TN.comment }
 const key = (text: string): Seg[] => [{ text, color: TN.comment }]
@@ -186,6 +191,69 @@ export const sessionCard = (ms: number, counted: Stats, spent: number | null, in
         ? []
         : [[key('turn'), [{ text: `平均 ${durationOf(counted.turnMs / counted.turns)}`, color: TN.fg }, { text: ` · 直近 ${durationOf(counted.lastTurnMs)}`, color: TN.fgDark }]] satisfies [Seg[], Seg[]]]),
       ...(counted.calls === 0 ? [] : [[key('tools'), toolSegs(counted)] satisfies [Seg[], Seg[]]]),
+    ],
+    inner,
+  )
+}
+
+const amountSegs = (day: Day): Seg[] => [
+  { text: `$${day.usd.toFixed(2)}`, color: TN.orange },
+  { text: ` · in ${thousands(day.input)}`, color: TN.fgDark },
+  { text: ` · out ${thousands(day.output)}`, color: TN.fgDark },
+]
+
+// 日ごとの棒と曜日の字。今日は色を変える。幅が足りなければ、すき間、棒の太さと曜日の字の順に落とす
+const dayRows = (week: readonly (Day & { weekday: string })[], weigh: (day: Day) => number, value: number): [Seg[], Seg[]][] => {
+  const top = Math.max(...week.map(weigh), 1e-9)
+  const isWide = value >= week.length * DAY_COLUMNS
+  const gap = value >= week.length * (DAY_COLUMNS + 1) - 1 ? ' ' : ''
+  const shown = isWide ? week : week.slice(-Math.max(1, value))
+  const between = (index: number): Seg[] => (index === 0 || gap === '' ? [] : [{ text: gap }])
+  const bars = shown.flatMap((day, index): Seg[] => {
+    const isToday = index === shown.length - 1
+    const amount = weigh(day)
+    // 使った日は、少なくても 1 段上げて、使っていない日と分ける
+    const level = amount === 0 ? 0 : Math.max(1, Math.round((amount / top) * (SPARKS.length - 1)))
+    const color = isToday ? TN.orange : amount === 0 ? TN.line : TN.blue
+    return [...between(index), { text: (SPARKS[level] ?? '▁').repeat(isWide ? DAY_COLUMNS : 1), color, ...(isToday ? { bold: true } : {}) }]
+  })
+  if (!isWide) return [[key('days'), bars]]
+  const names = shown.flatMap((day, index): Seg[] => [
+    ...between(index),
+    index === shown.length - 1 ? { text: day.weekday, color: TN.orange, bold: true } : { text: day.weekday, color: TN.comment },
+  ])
+  return [
+    [key('days'), bars],
+    [[], names],
+  ]
+}
+
+// このマシンの全セッションを足した、今日と直近 7 日の合計。直近 7 日に何も無ければ空
+export const dailyCard = (days: Days, now: number, inner: number): Seg[][] => {
+  const week = lastDays(now, DAYS_SHOWN).map(day => ({ ...(days[day.key] ?? NO_DAY), weekday: day.weekday }))
+  const today = week[week.length - 1] ?? { ...NO_DAY, weekday: '' }
+  const total = week.reduce<Day>((sum, day) => ({ usd: sum.usd + day.usd, input: sum.input + day.input, output: sum.output + day.output }), NO_DAY)
+  if (total.usd + total.input + total.output === 0) return []
+  // 費用が分かる間は費用で、分からなければトークンの数で比べる
+  const isPriced = total.usd > 0
+  const weigh = (day: Day) => (isPriced ? day.usd : day.input + day.output)
+  // 平均は、使った日だけで割る。使い始めたばかりの時に、平均が小さく出ない
+  const average = weigh(total) / Math.max(1, week.filter(day => weigh(day) > 0).length)
+  const ratio = Math.round((weigh(today) / average) * 10) / 10
+  return card(
+    [{ text: `${ICON.daily} Daily`, color: TN.orange, bold: true }],
+    [
+      [key('today'), amountSegs(today)],
+      [key('week'), amountSegs(total)],
+      [
+        key('avg'),
+        [
+          { text: `${isPriced ? `$${average.toFixed(2)}` : thousands(Math.round(average))}/日`, color: TN.fg },
+          dot,
+          { text: `平均の ${ratio.toFixed(1)} 倍`, color: ratio > 1 ? TN.orange : ratio < 1 ? TN.green : TN.fgDark, bold: ratio > 1 },
+        ],
+      ],
+      ...dayRows(week, weigh, valueWidth(inner, cellWidth('today'))),
     ],
     inner,
   )

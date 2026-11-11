@@ -3,6 +3,7 @@ import type { EngineInterface } from 'claude-code'
 
 import type { Config } from './config'
 import { PANE } from './config'
+import { forgetCounted } from './daily'
 import { resetStats } from './stats'
 import { measure, resetTokens } from './tokens'
 
@@ -17,6 +18,7 @@ async function begin($: EngineInterface) {
   await update($, lastTurnEnd, () => null)
   await resetStats($)
   await resetTokens($)
+  await forgetCounted($)
 }
 
 export async function restart($: EngineInterface) {

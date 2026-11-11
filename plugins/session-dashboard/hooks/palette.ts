@@ -38,6 +38,7 @@ export const ICON = {
   cache: '\u{F01BC}',
   session: '\uf017',
   tokens: '\uf0e7',
+  daily: '\uf073',
 }
 
 const rgbOf = (hex: string) => [1, 3, 5].map(at => parseInt(hex.slice(at, at + 2), 16))

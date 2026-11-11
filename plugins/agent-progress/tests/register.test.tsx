@@ -2,6 +2,7 @@ import { expect, mock, test, type TestBody } from 'claude-code/testing'
 
 import { cellWidth } from '../hooks/cell'
 import { FRAME_MS, FRAMES, LOOP_TICKS, sceneOf, SPRITE_COLUMNS, SPRITE_ROWS, spriteCells, stillCells } from '../hooks/sprite'
+import { closeAsk, forgetAsks, noteAsk, noteRan, openAsk } from '../hooks/asks'
 import { describe, firstLineOf } from '../hooks/tool'
 
 type On = Parameters<TestBody>[1]
@@ -21,6 +22,10 @@ type State = {
   compacting?: Promise<never>
   // hold で止めるツールの名前。無ければ Bash
   held?: string
+  // tool.check が返す答え。無ければ allow
+  verdict?: 'allow' | 'ask' | 'deny'
+  // ツールの中身。あれば、その戻りをツールの結果にする
+  run?: (e: { tool: string; tool_use_id?: string }) => Promise<unknown>
 }
 
 const engine = (on: On, state: State = {}) => {
@@ -41,7 +46,13 @@ const engine = (on: On, state: State = {}) => {
     return { value: {} } as never
   })
   on('ui.panes', () => ({ value: [{ id: 'agent-progress', title: '🤖 Agents', isShown: state.isShown ?? false, isFocused: false, isPlaced: true }] }))
+  on('tool.check', () => ({ decision: state.verdict ?? 'allow' }))
+  // 人の代わりに、すぐ許可する。断るのは、ツールがエラーを返すことで表す
+  on('classic.PermissionRequest', () => ({ decision: { behavior: 'allow' } }))
+  on('classic.PostToolUse', () => ({}))
+  on('classic.PostToolUseFailure', () => ({}))
   on('tool.call', (_, e) => {
+    if (state.run !== undefined) return state.run(e) as never
     if (state.hold !== undefined && e.tool === (state.held ?? 'Bash')) return state.hold
     if (e.tool === state.failing) return { isError: true, result: undefined, text: 'failed' } as never
     return (e.tool === 'TaskCreate' ? { result: { task: { id: String(Math.random()).slice(2, 6) } }, text: 'ok' } : { result: { stdout: 'ok', stderr: '' }, text: 'ok' }) as never
@@ -602,4 +613,182 @@ test('pane: サブエージェントを待つだけの間は、メインのア�
   expect(airOf(main.cells)).toBe('    o    ')
   release()
   await waiting
+})
+
+const OK = { result: { stdout: 'ok', stderr: '' }, text: 'ok' }
+const REFUSED = { isError: true, result: undefined, text: 'refused' }
+
+test('asks: 許可された待ちは、PostToolUse の時刻から duration_ms を引いた所で閉じる', async () => {
+  forgetAsks()
+  noteAsk('u1', 'Bash', undefined, { command: 'make test' })
+  openAsk('Bash', undefined, { command: 'make test' }, 1000)
+  // 41s 待って許可され、5s 動いた
+  noteRan('u1', 5000, 47_000)
+  expect(closeAsk('u1', false, 47_100)).toBe(41_000)
+  // 閉じた後は、もう数えない
+  expect(closeAsk('u1', false, 50_000)).toBe(0)
+})
+
+test('asks: 断られた待ちは、tool.call が決着した時刻で閉じる', async () => {
+  forgetAsks()
+  noteAsk('u1', 'Edit', 'a1', { file_path: '/a' })
+  openAsk('Edit', 'a1', { file_path: '/a' }, 1000)
+  expect(closeAsk('u1', true, 13_000)).toBe(12_000)
+})
+
+test('asks: 対応が付かない時と、値が取れない時は数えない', async () => {
+  forgetAsks()
+  // tool.check の ask を見ていない PermissionRequest
+  openAsk('Bash', undefined, { command: 'ls' }, 1000)
+  expect(closeAsk('u1', true, 9000)).toBe(0)
+
+  // ask は見たが、PermissionRequest が来なかった
+  noteAsk('u2', 'Bash', undefined, { command: 'ls' })
+  noteRan('u2', 100, 5000)
+  expect(closeAsk('u2', true, 9000)).toBe(0)
+
+  // ツールの名前は同じでも、エージェントが違う
+  noteAsk('u3', 'Bash', 'a1', { command: 'ls' })
+  openAsk('Bash', undefined, { command: 'ls' }, 1000)
+  expect(closeAsk('u3', true, 9000)).toBe(0)
+
+  // 同じツール・同じ入力の呼び出しが 2 つあり、どちらの確認か決まらない
+  noteAsk('u4', 'Bash', undefined, { command: 'ls' })
+  noteAsk('u5', 'Bash', undefined, { command: 'ls' })
+  openAsk('Bash', undefined, { command: 'ls' }, 1000)
+  expect(closeAsk('u4', true, 9000)).toBe(0)
+  expect(closeAsk('u5', true, 9000)).toBe(0)
+
+  // 動いたのに duration_ms が無い。成功で終わったのに PostToolUse が来ていない
+  noteAsk('u6', 'Bash', undefined, { command: 'ls' })
+  openAsk('Bash', undefined, { command: 'ls' }, 1000)
+  noteRan('u6', undefined, 5000)
+  expect(closeAsk('u6', true, 9000)).toBe(0)
+  noteAsk('u7', 'Bash', undefined, { command: 'ls' })
+  openAsk('Bash', undefined, { command: 'ls' }, 1000)
+  expect(closeAsk('u7', false, 9000)).toBe(0)
+})
+
+test('asks: 同じツールの呼び出しが重なっても、入力が違えば見分ける', async () => {
+  forgetAsks()
+  noteAsk('u1', 'Bash', undefined, { command: 'ls' })
+  noteAsk('u2', 'Bash', undefined, { command: 'make test' })
+  openAsk('Bash', undefined, { command: 'make test' }, 1000)
+  expect(closeAsk('u1', true, 4000)).toBe(0)
+  expect(closeAsk('u2', true, 4000)).toBe(3000)
+})
+
+type Called = { tool: string; tool_use_id?: string }
+
+// 確認を通った所で止まり、テストが決めた結果で終わるツール。called は、ツールの中身まで届いた呼び出し
+const pending = () => {
+  let settle: (result: unknown) => void = () => {}
+  let reach: (e: Called) => void = () => {}
+  const called = new Promise<Called>(resolve => {
+    reach = resolve
+  })
+  const run = (e: Called) => {
+    reach(e)
+    return new Promise<unknown>(resolve => {
+      settle = resolve
+    })
+  }
+  return { run, called, settle: (result: unknown) => settle(result) }
+}
+
+test('pane: ターンの終わりの行に、許可の確認を待った時間の合計を添える', async ($, on) => {
+  const state: State = { verdict: 'ask' }
+  const { clock } = engine(on, state)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  // 3s 待って許可され、1s 動いた
+  const bash = pending()
+  state.run = bash.run
+  const ran = $.tool.call({ tool: 'Bash', command: 'make test', description: 'テストを走らせる' } as never)
+  const e = await bash.called
+  await clock.advance(4000)
+  await $.classic.PostToolUse({ tool_name: e.tool, tool_input: {}, tool_response: {}, tool_use_id: e.tool_use_id ?? '', duration_ms: 1000 })
+  bash.settle(OK)
+  await ran
+  // 2s 待って断られた。ツールは動かないので、PostToolUse は来ない
+  const edit = pending()
+  state.run = edit.run
+  const refused = $.tool.call({ tool: 'Edit', file_path: '/repo/a.swift' } as never)
+  await edit.called
+  await clock.advance(2000)
+  edit.settle(REFUSED)
+  await refused
+
+  // 作業中は出さない
+  expect((await paneOf($)).texts.some(text => text.includes('許可待ち'))).toBe(false)
+  await $.turn.complete({ ...(done() as object), reason: 'answer' } as never)
+  expect((await paneOf($, 64)).texts.some(text => /^Claude +✓ 完了 6s · 許可待ち 計 5s$/.test(text))).toBe(true)
+  // 名前と並ばない幅では、下の行に分ける
+  const narrow = (await paneOf($, 48)).texts
+  expect(narrow.some(text => /^Claude +✓ 完了 6s$/.test(text))).toBe(true)
+  expect(narrow).toContain('許可待ち 計 5s')
+
+  // 次のターンでは、0 から数え直す
+  state.verdict = 'allow'
+  delete state.run
+  await $.turn.start({ turnId: 't2', text: 'go' })
+  await $.tool.call({ tool: 'Read', file_path: '/repo/a.swift' } as never)
+  await $.turn.complete({ ...(done('t2') as object), reason: 'answer' } as never)
+  expect((await paneOf($, 64)).texts.some(text => text.includes('許可待ち'))).toBe(false)
+})
+
+test('pane: 確認に回らなかったツールと、動いた時間が分からないツールは、許可待ちに数えない', async ($, on) => {
+  const state: State = {}
+  const { clock } = engine(on, state)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  // 確認なしで 2s 動いた
+  const test = pending()
+  state.run = test.run
+  const tested = $.tool.call({ tool: 'Bash', command: 'make test' } as never)
+  const e = await test.called
+  await clock.advance(2000)
+  await $.classic.PostToolUse({ tool_name: e.tool, tool_input: {}, tool_response: {}, tool_use_id: e.tool_use_id ?? '', duration_ms: 2000 })
+  test.settle(OK)
+  await tested
+  // 確認に回ったが、PostToolUse に duration_ms が無い
+  state.verdict = 'ask'
+  const lint = pending()
+  state.run = lint.run
+  const linted = $.tool.call({ tool: 'Bash', command: 'make lint' } as never)
+  const asked = await lint.called
+  await clock.advance(2000)
+  await $.classic.PostToolUse({ tool_name: asked.tool, tool_input: {}, tool_response: {}, tool_use_id: asked.tool_use_id ?? '' })
+  lint.settle(OK)
+  await linted
+  await $.turn.complete({ ...(done() as object), reason: 'answer' } as never)
+
+  const { texts } = await paneOf($, 64)
+  expect(texts.some(text => /^Claude +✓ 完了 4s$/.test(text))).toBe(true)
+  expect(texts.some(text => text.includes('許可待ち'))).toBe(false)
+})
+
+test('pane: 終わったサブエージェントのカードに、そのツールが許可の確認を待った時間の合計を添える', async ($, on) => {
+  const state: State = { verdict: 'ask', agents: [{ id: 'a1', status: 'completed' }] }
+  const { clock } = engine(on, state)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await $.agent.spawn({ subagentType: 'Explore', description: '探す', prompt: 'p' } as never)
+  // 2s 待って許可され、1s 動いて失敗した
+  const bash = pending()
+  state.run = bash.run
+  const ran = $.tool.call({ tool: 'Bash', command: 'make test', agentId: 'a1' } as never)
+  const e = await bash.called
+  await clock.advance(3000)
+  await $.classic.PostToolUseFailure({ tool_name: e.tool, tool_input: {}, tool_use_id: e.tool_use_id ?? '', error: 'exit 1', duration_ms: 1000, agent_id: 'a1' })
+  bash.settle({ isError: true, result: undefined, text: 'exit 1' })
+  await ran
+
+  // 動いている間は出さない
+  expect((await paneOf($, 64)).texts.some(text => text.includes('許可待ち'))).toBe(false)
+  await $.turn.complete(done('t2', 'a1'))
+  expect((await paneOf($, 64)).texts).toContain('ツール 1 · 失敗 1 · 許可待ち 計 2s')
+  // メインのターンには足さない
+  await $.turn.complete({ ...(done() as object), reason: 'answer' } as never)
+  expect((await paneOf($, 64)).texts.some(text => /^Claude +✓ 完了 3s$/.test(text))).toBe(true)
 })

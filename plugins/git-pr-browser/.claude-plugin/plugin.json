@@ -1,0 +1,17 @@
+{
+  "name": "git-pr-browser",
+  "version": "0.2.0",
+  "description": "gh pr create で PR を作ったら terminal-browser でページを開き、今のブランチの PR の CI・レビュー・未解決のコメントを入力欄の上に出す",
+  "author": {
+    "name": "yossibank"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "pollSeconds": {
+      "type": "number",
+      "title": "取り直す間隔（秒）",
+      "description": "CI が終わるまで、PR の状態を取り直す間隔。10 より小さい値は初めの値に戻す",
+      "default": 60
+    }
+  }
+}

@@ -29,16 +29,30 @@
 
 ## 🏷️ 名前の付け方
 
-名前は `<何を>-<どう見せるか>` の形の kebab-case にする。後ろの語は、次の表から選ぶ。
+名前は `<領域>-<何を>-<どう見せるか>` の形の kebab-case にする。一覧は名前の順に並ぶので、前の語で同じ領域のものが固まる。
+
+前の語は、次の表から選ぶ。
+
+| 前の語 | 領域 | 例 |
+| --- | --- | --- |
+| `agent-` | Claude とサブエージェントの動き | `agent-progress` |
+| `git-` | git と GitHub | `git-pr-browser` |
+| `ios-` | iOS のアプリのビルド・テスト・画面 | `ios-test-progress`、`ios-snapshot-gallery` |
+| `session-` | 会話の状態と区切り | `session-dashboard`、`session-handoff` |
+
+後ろの語は、次の表から選ぶ。
 
 | 後ろの語 | 使う時 | 例 |
 | --- | --- | --- |
-| `-progress` | 動いている間の進みを出し、終わったら止まるか消える | `test-progress`、`agent-progress` |
-| `-dashboard` | 数字をずっと出しておく | `session-dashboard` |
-| `-gallery` | 画像を並べる | `snapshot-gallery` |
-| `-browser` | ページを開く | `pr-browser` |
+| `-progress` | 動いている間の進みを出し、終わったら止まるか消える | `ios-test-progress`、`ios-build-progress`、`agent-progress` |
+| `-dashboard` | 数字をずっと出しておく | `session-dashboard`、`ios-simulator-dashboard` |
+| `-gallery` | 画像を並べる | `ios-snapshot-gallery` |
+| `-browser` | ページを開く | `git-pr-browser` |
+| `-steps` | 次にすることの候補を出す | `session-next-steps` |
 
-動作そのものが役目のものは、`handoff` のように動詞 1 語でもよい。表に無い見せ方の時は、表に語を足してから名前を付ける。
+前の語が何をするかまで表している時は、`agent-progress` のように真ん中の語を省く。動作そのものが役目のものは、`session-handoff` のように後ろを動詞 1 語にしてもよい。表に無い領域や見せ方の時は、表に語を足してから名前を付ける。
+
+コマンドの名前は、プラグインの名前と揃えなくてよい。打ちやすい短い語にする（`/handoff`、`/snapshots`）。
 
 ## 📏 バージョンの上げ方
 
