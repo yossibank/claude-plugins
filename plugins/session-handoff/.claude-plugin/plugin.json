@@ -1,6 +1,6 @@
 {
   "name": "session-handoff",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "文脈が埋まってきたら右のペインで引き継ぎを勧め、引き継ぎメモを書いて、新しい会話へ渡す",
   "author": {
     "name": "yossibank"
