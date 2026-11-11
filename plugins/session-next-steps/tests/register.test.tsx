@@ -34,11 +34,18 @@ type World = {
   // 失敗させる Bash のコマンド
   failing?: RegExp
   isFilled?: boolean
+  // $.model.fork の答え
+  fork?: { isAnswered: true; text: string } | { isAnswered: false; reason: string }
 }
 
 const engine = (on: On, world: World = {}) => {
   const { isRepo = true, status = '', ahead = 0, alone = 0, remotes = 'origin', branch = 'main', pr = 'found', tokens = 10_000, failing, isFilled = true } = world
-  const seen = { runs: [] as string[], fills: [] as string[], toasts: [] as string[] }
+  const { fork = { isAnswered: true, text: '[]' } } = world
+  const seen = { runs: [] as string[], fills: [] as string[], toasts: [] as string[], forks: [] as string[] }
+  on('model.fork', (_, e) => {
+    seen.forks.push(e.prompt)
+    return { value: { usage: { input_tokens: 0, output_tokens: 0 }, ...fork } as never }
+  })
   const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '' } as never })
   const ng = (stderr: string) => ({ value: { exitCode: 1, stdout: '', stderr } as never })
   on('session.cwd', () => ({ value: '/repo' }))
@@ -87,8 +94,8 @@ const engine = (on: On, world: World = {}) => {
 // void で走らせた調べが終わるのを待つ
 const settle = () => new Promise(resolve => setTimeout(resolve, 20))
 
-const finish = async ($: Self) => {
-  await $.turn.complete(TURN)
+const finish = async ($: Self, answer = '') => {
+  await $.turn.complete({ ...TURN, answer })
   await settle()
 }
 
@@ -161,7 +168,7 @@ test('書き換えた後に確かめていたら、テストを勧めない。�
 })
 
 test('未 commit の変更があれば、commit を勧める', async ($, on) => {
-  engine(on, { status: ' M a.ts\n?? b.ts\n' })
+  engine(on, { status: ' M a.ts\n?? b.ts\n', branch: 'feat/x' })
 
   await finish($)
 
@@ -169,9 +176,32 @@ test('未 commit の変更があれば、commit を勧める', async ($, on) => 
 })
 
 test('push していない commit があれば、push を勧める', async ($, on) => {
-  engine(on, { ahead: 2 })
+  engine(on, { ahead: 2, branch: 'feat/x' })
   await finish($)
   expect(await rows($)).toEqual([expect.stringMatching(/^push して\s+push していない commit 2 つ$/), '隠す'])
+})
+
+test('既定のブランチでは、commit と push の代わりに PR を勧める', async ($, on) => {
+  const seen = engine(on, { status: ' M a.ts\n', ahead: 2 })
+  await finish($)
+  expect(await rows($)).toEqual([expect.stringMatching(/^PR にして\s+既定のブランチに未 commit 1 件、push していない commit 2 つ$/), '隠す'])
+  const ui = await $.ui.mount(BAND())
+  await ui.press({ key: 'step-pr' })
+  await settle()
+  expect(seen.fills).toEqual(['PR にして'])
+  await ui.unmount()
+})
+
+test('prOnDefault を切ると、既定のブランチでも commit と push を勧める', { options: { prOnDefault: false } }, async ($, on) => {
+  engine(on, { status: ' M a.ts\n', ahead: 2 })
+  await finish($)
+  expect((await rows($)).map(text => text.split(/\s{2,}/)[0])).toEqual(['変更を commit して', 'push して', '隠す'])
+})
+
+test('リモートが無いリポジトリでは、既定のブランチでも PR を勧めない', async ($, on) => {
+  engine(on, { status: ' M a.ts\n', remotes: '' })
+  await finish($)
+  expect((await rows($)).map(text => text.split(/\s{2,}/)[0])).toEqual(['変更を commit して', '隠す'])
 })
 
 test('upstream が無いブランチは、どのリモートにも無い commit を数える', async ($, on) => {
@@ -238,7 +268,7 @@ test('文脈が contextPercent より下なら、/handoff を勧めない', { op
 })
 
 test('優先の高い順に、maxSteps 個までで切る', async ($, on) => {
-  engine(on, { status: ' M a.ts\n', ahead: 1, tokens: 190_000 })
+  engine(on, { status: ' M a.ts\n', ahead: 1, tokens: 190_000, branch: 'feat/x' })
 
   await edit($, '/repo/a.ts')
   await finish($)
@@ -260,7 +290,7 @@ test('maxSteps と testCommand を変えられる', { options: { maxSteps: 1, te
 })
 
 test('ボタンを押すと、指示の文が入力欄に入る。帯は残る', async ($, on) => {
-  const seen = engine(on, { status: ' M a.ts\n', failing: /make test/ })
+  const seen = engine(on, { status: ' M a.ts\n', failing: /make test/, branch: 'feat/x' })
 
   await $.tool.call({ tool: 'Bash', command: 'make test' })
   await finish($)
@@ -276,7 +306,7 @@ test('ボタンを押すと、指示の文が入力欄に入る。帯は残る',
 })
 
 test('入力欄に入れられなかった時は、トーストで知らせる', async ($, on) => {
-  const seen = engine(on, { status: ' M a.ts\n', isFilled: false })
+  const seen = engine(on, { status: ' M a.ts\n', isFilled: false, branch: 'feat/x' })
 
   await finish($)
 
@@ -358,7 +388,112 @@ test('幅が狭い時は、理由を切るか出さない', async ($, on) => {
   await finish($)
 
   expect((await rows($, 44))[0]).toMatch(/^make test を走らせて\s+\d ファイルを書き換.*…$/)
-  expect(await rows($, 24)).toEqual(['make test を走らせて', '変更を commit して', '隠す'])
+  expect(await rows($, 24)).toEqual(['make test を走らせて', 'PR にして', '隠す'])
+})
+
+test('返事の最後の段落で勧めたコマンドを、いちばん上に出す', async ($, on) => {
+  const seen = engine(on, { tokens: 150_000 })
+
+  await finish($, '前の段落の `/old` は取らない。\n\n`/reload-plugins` で読み込み直し、`/handoff` で区切る。`/Users/me/a.ts` と `make test` は取らない')
+
+  expect((await rows($)).map(text => text.split(/\s{2,}/)[0])).toEqual(['/reload-plugins', '/handoff', '隠す'])
+  const ui = await $.ui.mount(BAND())
+  expect((await ui.find({ key: 'step-said-0' }))?.text).toMatch(/^\/reload-plugins\s+返事の最後で勧めた$/)
+  await ui.press({ key: 'step-said-0' })
+  await settle()
+  expect(seen.fills).toEqual(['/reload-plugins'])
+  await ui.unmount()
+})
+
+test('返事の最後がコードの塊なら、その行のコマンドを出す', async ($, on) => {
+  engine(on)
+  await finish($, '次の一手:\n\n```sh\n/plugin marketplace update yossibank\n! make test\n```')
+  expect((await rows($)).map(text => text.split(/\s{2,}/)[0])).toEqual(['/plugin marketplace update yossibank', '! make test', '隠す'])
+})
+
+test('書き換えた後は、この会話で前に走らせた確かめるコマンドを勧める', async ($, on) => {
+  engine(on, { branch: 'feat/x' })
+
+  await $.turn.start({ text: '直して', turnId: 't1' })
+  await $.tool.call({ tool: 'Bash', command: 'cd app && npm run test:unit' })
+  await finish($)
+  await $.turn.start({ text: '次', turnId: 't2' })
+  await edit($, '/repo/a.ts')
+  await finish($)
+
+  expect(await rows($)).toEqual([expect.stringMatching(/^npm run test:unit を走らせて/), '隠す'])
+})
+
+test('確かめるコマンドは、当たった区切りの字ごと勧める', async ($, on) => {
+  engine(on, { branch: 'feat/x' })
+
+  await $.tool.call({ tool: 'Bash', command: 'xcodebuild -scheme App   test 2>&1 | tail -5' })
+  await edit($, '/repo/a.ts')
+  await finish($)
+
+  expect(await rows($)).toEqual([expect.stringMatching(/^xcodebuild -scheme App test 2>&1 を走らせて/), '隠す'])
+})
+
+test('新しい会話では、前の会話の確かめるコマンドを勧めない', async ($, on) => {
+  engine(on, { branch: 'feat/x' })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.tool.call({ tool: 'Bash', command: 'npm run test:unit' })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await edit($, '/repo/a.ts')
+  await finish($)
+
+  expect(await rows($)).toEqual([expect.stringMatching(/^make test を走らせて/), '隠す'])
+})
+
+test('askModel を切っている時は、モデルに尋ねない', async ($, on) => {
+  const seen = engine(on, { status: ' M a.ts\n' })
+  await finish($, '終わった')
+  expect(seen.forks).toEqual([])
+})
+
+test('askModel を入れると、モデルの答えを出す。規則の候補を参考に添える', { options: { askModel: true } }, async ($, on) => {
+  const text = '```json\n[{"label":"README を直す","reason":"説明が古い","text":"README の設定の表を直して"},{"text":"PR にして"},{"label":"空","text":""}]\n```'
+  const seen = engine(on, { status: ' M a.ts\n', fork: { isAnswered: true, text } })
+
+  await finish($)
+
+  expect(seen.forks).toHaveLength(1)
+  expect(seen.forks[0]).toContain('PR にして（既定のブランチに未 commit 1 件）')
+  expect(await rows($)).toEqual([expect.stringMatching(/^README を直す\s+説明が古い$/), expect.stringMatching(/^PR にして\s*$/), '隠す'])
+  const ui = await $.ui.mount(BAND())
+  await ui.press({ key: 'step-ask-0' })
+  await settle()
+  expect(seen.fills).toEqual(['README の設定の表を直して'])
+  await ui.unmount()
+})
+
+test('モデルが何も勧めなかったら、帯を出さない', { options: { askModel: true } }, async ($, on) => {
+  engine(on, { status: ' M a.ts\n', fork: { isAnswered: true, text: '[]' } })
+  await finish($)
+  expect(await rows($)).toEqual([])
+})
+
+test('モデルに尋ねられない時は、知らせて規則の候補を出す', { options: { askModel: true } }, async ($, on) => {
+  const seen = engine(on, { status: ' M a.ts\n', fork: { isAnswered: false, reason: 'api-error' } })
+  await finish($)
+  expect(await rows($)).toEqual([expect.stringMatching(/^PR にして/), '隠す'])
+  expect(seen.toasts).toEqual(['session-next-steps: モデルに尋ねられませんでした（api-error）。規則の候補を出します'])
+})
+
+test('モデルの答えを読めない時は、知らせて規則の候補を出す', { options: { askModel: true } }, async ($, on) => {
+  const seen = engine(on, { status: ' M a.ts\n', fork: { isAnswered: true, text: 'すみません' } })
+  await finish($)
+  expect(await rows($)).toEqual([expect.stringMatching(/^PR にして/), '隠す'])
+  expect(seen.toasts).toEqual(['session-next-steps: モデルの答えを読めませんでした。規則の候補を出します'])
+})
+
+test('止めたターンでは、モデルに尋ねない', { options: { askModel: true } }, async ($, on) => {
+  const seen = engine(on, { status: ' M a.ts\n' })
+  await $.turn.complete({ ...TURN, reason: 'aborted', isAborted: true })
+  await settle()
+  expect(seen.forks).toEqual([])
+  expect(await rows($)).toEqual([expect.stringMatching(/^PR にして/), '隠す'])
 })
 
 test('壊れた正規表現は初めの値に戻し、最初に 1 度だけ知らせる', { options: { checkPattern: '(' } }, async ($, on) => {

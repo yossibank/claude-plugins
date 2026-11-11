@@ -6,7 +6,7 @@ import type { Step } from '../types'
 import { optionsOf } from './config'
 import type { Options } from './config'
 import { gather } from './facts'
-import { checkOf, choose, cut, pad, widthOf } from './steps'
+import { askedOf, askingOf, choose, cut, matchOf, pad, saidOf, widthOf } from './steps'
 import type { Turn } from './steps'
 
 const EDIT_TOOLS = ['Edit', 'MultiEdit', 'Write', 'NotebookEdit']
@@ -27,7 +27,7 @@ const report = ($: EngineInterface, what: string) => (error: unknown) => {
   $.ui.toast(`session-next-steps: ${what}に失敗しました: ${errorText(error)}`.slice(0, 120))
 }
 
-const fresh = (): Turn => ({ check: null, edited: [] })
+const fresh = (): Turn => ({ check: null, edited: [], said: [] })
 
 // register の 1 回ごとの持ち物。$ を受け取る関数はファイルの一番上に置くので、ここにまとめて渡す
 type Local = {
@@ -38,6 +38,8 @@ type Local = {
   generation: number
   // PR があると分かったブランチ
   knownPrs: Set<string>
+  // この会話で最後に走らせたテストかビルド。書き換えた後に走らせるよう勧めるのは、testCommand よりこちら
+  lastCheck: string | null
 }
 
 const tell = ($: EngineInterface, local: Local) => {
@@ -56,26 +58,43 @@ const fill = async ($: EngineInterface, step: Step) => {
   if (!filled.isFilled) $.ui.toast(`session-next-steps: 入力欄に入れられませんでした。「${step.text}」と打ってください`.slice(0, 120))
 }
 
+// 会話の続きとしてモデルに尋ねる。尋ねられない時と答えを読めない時は、規則の候補を返す
+const ask = async ($: EngineInterface, hints: Step[], options: Options) => {
+  const reply = await $.model.fork({ prompt: askingOf(hints, options.maxSteps) })
+  if (!reply.isAnswered) {
+    if (reply.reason !== 'nothing-to-fork' && reply.reason !== 'aborted') $.ui.toast(`session-next-steps: モデルに尋ねられませんでした（${reply.reason}）。規則の候補を出します`)
+    return hints
+  }
+  const asked = askedOf(reply.text, options.maxSteps)
+  if (asked === null) $.ui.toast('session-next-steps: モデルの答えを読めませんでした。規則の候補を出します')
+  return asked ?? hints
+}
+
 // git と gh を走らせて候補を選ぶ。待つ間に帯を消していたら、出さない
-const look = async ($: EngineInterface, local: Local, options: Options) => {
+const look = async ($: EngineInterface, local: Local, options: Options, answer: string, isAsked: boolean) => {
   const mine = (local.generation += 1)
-  const seen = local.turn
-  const steps = choose(seen, await gather($, local.knownPrs), options)
+  const seen = { ...local.turn, said: saidOf(answer) }
+  const hints = choose(seen, await gather($, local.knownPrs), { ...options, testCommand: local.lastCheck ?? options.testCommand })
+  const steps = isAsked ? await ask($, hints, options) : hints
   if (mine === local.generation) await update($, shown, () => steps)
 }
 
 export const register: Register = (on, raw) => {
   const { options, isBroken } = optionsOf(raw)
-  const local: Local = { isBroken, isTold: false, turn: fresh(), generation: 0, knownPrs: new Set() }
+  const local: Local = { isBroken, isTold: false, turn: fresh(), generation: 0, knownPrs: new Set(), lastCheck: null }
 
   on('session.start', async ($, e, next) => {
+    local.lastCheck = null
     await clear($, local)
     return next(e)
   })
 
-  // /clear のあとは、前の会話の候補を残さない
+  // /clear のあとは、前の会話の候補と確かめるコマンドを残さない
   on('session.end', async ($, e, next) => {
-    if (e.reason === 'clear') await clear($, local).catch(report($, '帯を消すこと'))
+    if (e.reason === 'clear') {
+      local.lastCheck = null
+      await clear($, local).catch(report($, '帯を消すこと'))
+    }
     return next(e)
   })
 
@@ -99,9 +118,12 @@ export const register: Register = (on, raw) => {
     if (e.agentId !== undefined) return ran
     if (e.tool === 'Bash') {
       tell($, local)
-      const label = checkOf(e.command, options.check)
+      const hit = matchOf(e.command, options.check)
       // 断られたコマンドは、走っていないので数えない
-      if (label !== undefined && ran.deny === undefined) local.turn = { check: { label, isFailed: ran.isError === true }, edited: [] }
+      if (hit !== undefined && ran.deny === undefined) {
+        local.turn = { ...local.turn, check: { label: hit.label, isFailed: ran.isError === true }, edited: [] }
+        local.lastCheck = hit.segment
+      }
     } else if (EDIT_TOOLS.includes(e.tool) && ran.deny === undefined && ran.isError !== true) {
       const input = e as { file_path?: unknown; notebook_path?: unknown }
       const path = input.file_path ?? input.notebook_path
@@ -111,11 +133,12 @@ export const register: Register = (on, raw) => {
     return ran
   })
 
-  // git と gh は、ターンの終わりを待たせずに走らせる
+  // git と gh とモデルは、ターンの終わりを待たせずに走らせる。止めたターンでは、モデルに尋ねない
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
     if (e.agentId !== undefined) return done
-    void look($, local, options).catch(report($, '次の一手を調べること'))
+    const isAsked = options.askModel && e.reason === 'answer'
+    void look($, local, options, e.answer, isAsked).catch(report($, '次の一手を調べること'))
     return done
   })
 

@@ -4,9 +4,14 @@ export const DEFAULTS = {
   testCommand: 'make test',
   checkPattern: '\\b(?:make\\b(?:\\s+\\S+)*?\\s+(?:\\S*[-_.:])?(?:test|build|verify|check|lint|types)(?:[-_.:]\\S*)?|(?:npm|pnpm|yarn|bun)\\s+(?:run\\s+)?(?:test|build|lint|typecheck)(?:[-_.:]\\S*)?|swift\\s+(?:test|build)|xcodebuild|cargo\\s+(?:test|build|check|clippy)|go\\s+(?:test|build|vet)|pytest|tsc|jest|vitest|claude\\s+plugin\\s+(?:test|validate))(?=\\s|$)',
   contextPercent: 70,
+  prOnDefault: true,
+  askModel: false,
 }
 
-export type Options = { maxSteps: number; testCommand: string; check: RegExp; contextPercent: number }
+export type Options = { maxSteps: number; testCommand: string; check: RegExp; contextPercent: number; prOnDefault: boolean; askModel: boolean }
+
+// 設定の画面からは真偽が字で来ることがある
+const flag = (value: unknown, fallback: boolean) => (typeof value === 'boolean' ? value : value === 'true' ? true : value === 'false' ? false : fallback)
 
 const text = (value: unknown, fallback: string) => (typeof value === 'string' && value.trim() !== '' ? value.trim() : fallback)
 
@@ -27,6 +32,8 @@ export const optionsOf = (raw: Readonly<Record<string, unknown>>) => {
     testCommand: text(raw.testCommand, DEFAULTS.testCommand),
     check,
     contextPercent: Number.isFinite(contextPercent) && contextPercent > 0 && contextPercent <= 100 ? contextPercent : DEFAULTS.contextPercent,
+    prOnDefault: flag(raw.prOnDefault, DEFAULTS.prOnDefault),
+    askModel: flag(raw.askModel, DEFAULTS.askModel),
   }
   return { options, isBroken }
 }

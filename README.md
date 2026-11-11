@@ -16,7 +16,7 @@
 | [ios-test-progress](plugins/ios-test-progress/README.md) | テストのコマンドの間、進みの棒と落ちたテストとその理由を入力欄の上に出し、終わったらトーストで知らせる。前の回から直った数と、遅いテストも出す。コマンドの出力を `.build/test.log` に残しておく |
 | [session-dashboard](plugins/session-dashboard/README.md) | モデル・バージョン・費用・リポジトリ・利用の上限・文脈の埋まり具合・セッションの経過を右の pane に出す。閉じている間は入力欄の上に出す |
 | [session-handoff](plugins/session-handoff/README.md) | 文脈が埋まってきたら、右のペインで引き継ぎを勧める。引き継ぎメモを `.claude/handoff.md` に書き、`/clear` した新しい会話の入力欄に入れる |
-| [session-next-steps](plugins/session-next-steps/README.md) | ターンが終わるたびに、次にすること（テスト・commit・push・PR・区切り）を 3 つまで選び、入力欄の上にボタンで出す。押すと、その指示が入力欄に入る |
+| [session-next-steps](plugins/session-next-steps/README.md) | ターンの終わりに、次にすることを 3 つまで入力欄の上にボタンで出す。押すと、その指示が入力欄に入る |
 
 ## 🗺️ 全体像
 
