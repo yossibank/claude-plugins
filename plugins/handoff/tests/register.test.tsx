@@ -1,8 +1,8 @@
 import { expect, test, type TestBody } from 'claude-code/testing'
 
-import { diffOf } from '../hooks/facts'
-import { cleanMemo, nextOf, resumeOf, unverifiedOf } from '../hooks/memo'
-import { ago, bar, clock } from '../hooks/pane'
+import { numstatOf } from '../hooks/facts'
+import { cleanMemo, isEmptyParts, nextOf, partsOf, resumeOf, unverifiedOf } from '../hooks/memo'
+import { ago, bar, clock, largest, tail } from '../hooks/pane'
 
 declare const setTimeout: (run: (value?: unknown) => void, ms: number) => unknown
 
@@ -25,7 +25,7 @@ const TURN = { answer: '', durationMs: 0, isAborted: false, turnId: 't1', reason
 
 type Seen = { files: Map<string, string>; runs: string[]; prompts: string[]; toasts: string[]; commands: string[]; fills: string[]; copies: string[]; opened: string[]; closed: string[] }
 
-const engine = (on: On, { reply = MEMO as string | null, failure = 'empty-reply', tokens = 100_000, files = new Map<string, string>(), untracked = '', messages = null as unknown[] | null } = {}) => {
+const engine = (on: On, { reply = MEMO as string | null, failure = 'empty-reply', tokens = 100_000, files = new Map<string, string>(), untracked = '', status = '', messages = null as unknown[] | null } = {}) => {
   const seen: Seen = { files, runs: [], prompts: [], toasts: [], commands: [], fills: [], copies: [], opened: [], closed: [] }
   on('command.register', () => ({ value: { command: 'handoff' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -37,11 +37,13 @@ const engine = (on: On, { reply = MEMO as string | null, failure = 'empty-reply'
       ? '/repo\n'
       : args.includes('--show-current')
         ? 'feat/x\n'
-        : args.includes('--shortstat')
-          ? ' 2 files changed, 12 insertions(+), 3 deletions(-)\n'
+        : args.includes('--numstat')
+          ? '12\t3\tplugins/handoff/hooks/register.tsx\n'
           : args.includes('ls-files')
             ? untracked
-            : ''
+            : args.includes('--porcelain')
+              ? status
+              : ''
     return { value: { exitCode: 0, stdout, stderr: '' } as never }
   })
   on('session.messages', () => ({
@@ -137,8 +139,23 @@ test('棒・時間・差分の数え方', () => {
   expect(clock(3_725_000)).toBe('1:02:05')
   expect(ago(30_000)).toBe('いま')
   expect(ago(2 * 3600_000)).toBe('2 時間前')
-  expect(diffOf(' 2 files changed, 12 insertions(+), 3 deletions(-)')).toEqual({ added: 12, removed: 3 })
-  expect(diffOf(' 1 file changed, 4 deletions(-)')).toEqual({ added: 0, removed: 4 })
+  expect(numstatOf('12\t3\ta.ts\n-\t-\tb.png')).toEqual(
+    new Map([
+      ['a.ts', { added: 12, removed: 3 }],
+      ['b.png', { added: 0, removed: 0 }],
+    ]),
+  )
+  expect(tail('plugins/handoff/hooks/register.tsx', 20)).toBe('…/hooks/register.tsx')
+  expect(tail('averyveryverylongname.tsx', 10)).toBe('…gname.tsx')
+  expect(tail('a.ts', 14)).toBe('a.ts')
+  expect(largest([{ path: 'a', added: 1, removed: 0, isNew: false }, { path: 'b', added: 5, removed: 2, isNew: false }]).map(change => change.path)).toEqual(['b', 'a'])
+})
+
+test('メモを項目ごとに分ける。決まりの形でなければ空にする', () => {
+  const parts = partsOf('# 引き継ぎ\n- 目的：a\n- 決めたこと：b\n- 決めたこと：\n  - c\n  - d\n- 次：1. e 2. f\n- 触ったファイル：x.ts, y.ts\n- 未検証：g\n')
+  expect(parts).toEqual({ goal: 'a', decisions: ['b', 'c', 'd'], next: ['e', 'f'], files: ['x.ts, y.ts'], unverified: ['g'] })
+  expect(isEmptyParts(parts)).toBe(false)
+  expect(isEmptyParts(partsOf('メモは書けませんでした'))).toBe(true)
 })
 
 test('/handoff で、ペインを開き、触ったファイルを渡してメモを書き、.gitignore に足す', async ($, on) => {
@@ -163,10 +180,11 @@ test('ファイルの差分は、触ったファイルだけで数え、未追�
   await $.command.run(HANDOFF)
   await settle()
 
-  expect(seen.runs).toContain('git --literal-pathspecs diff --shortstat HEAD -- plugins/handoff/hooks/register.tsx')
-  expect(seen.runs).toContain('git --literal-pathspecs ls-files --others --exclude-standard -- plugins/handoff/hooks/register.tsx')
+  expect(seen.runs).toContain('git -c core.quotepath=false --literal-pathspecs diff --numstat --no-renames HEAD -- plugins/handoff/hooks/register.tsx')
+  expect(seen.runs).toContain('git -c core.quotepath=false --literal-pathspecs ls-files --others --exclude-standard -- plugins/handoff/hooks/register.tsx')
   const ui = await $.ui.mount(PANE('terminal'))
-  expect((await ui.find({ type: 'Text', text: /^\+\d+ −\d+$/ }))?.text).toBe('+15 −3')
+  expect((await ui.find({ type: 'Text', text: /^\+\d+ −\d+$/ }))?.text).toBe('+3 −0')
+  expect((await ui.find({ type: 'Text', text: /^新規 / }))?.text).toBe('新規 +3 −0')
   await ui.unmount()
 })
 
@@ -177,7 +195,7 @@ test('触ったファイルが無ければ、ほかの変更があっても差�
   await $.turn.complete(TURN)
   await settle()
 
-  expect(seen.runs.some(run => run.includes('--shortstat'))).toBe(false)
+  expect(seen.runs.some(run => run.includes('--numstat'))).toBe(false)
   const ui = await $.ui.mount(PANE('terminal'))
   expect((await ui.find({ type: 'Text', text: /^\+\d+ −\d+$/ }))?.text).toBe('+0 −0')
   await ui.unmount()
@@ -232,6 +250,11 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect((await ui.find({ type: 'Text', text: /^\+12 −3$/ }))?.text).toBe('+12 −3')
     expect((await ui.find({ type: 'Text', text: /PR を作る/ }))?.text).toContain('2')
     expect((await ui.find({ type: 'Text', text: /キャッシュ 90%/ }))?.text).toContain('出力 300')
+    expect((await ui.find({ type: 'Text', text: /handoff の mod を出す/ }))?.text).toContain('◎')
+    expect((await ui.find({ type: 'Text', text: /\/clear の後/ }))?.text).toContain('⚠')
+    expect((await ui.find({ type: 'Text', text: /register\.tsx/ }))?.text).toBe('● …/handoff/hooks/register.tsx')
+    expect((await ui.find({ type: 'Text', text: /commit/ }))?.text).toBe('すべて commit 済み')
+    expect((await ui.find({ type: 'Text', text: /上限/ }))?.text).toBe('上限 20 行 · 70 字')
     await ui.press({ key: 'copy' })
     expect(seen.copies).toEqual([resumeOf(MEMO)])
     await ui.press({ key: 'begin' })
@@ -254,6 +277,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect((await ui.find({ type: 'Text', text: /引き継ぎどき/ }))?.text).toContain('引き継ぎどき')
     expect((await ui.find({ type: 'Text', text: /^80%$/ }))?.text).toBe('80%')
     expect((await ui.find({ type: 'Text', text: /→ 約/ }))?.text).toContain('160k → 約 10k')
+    expect((await ui.find({ type: 'Text', text: /^160k \/ 200k$/ }))?.text).toBe('160k / 200k')
+    expect((await ui.find({ type: 'Text', text: /区切っても残る分/ }))?.text).toContain('会話 151k')
     await ui.press({ key: 'later' })
     await ui.unmount()
     await settle()
@@ -323,5 +348,17 @@ test('モデルが答えなければ、失敗を出してトーストで知ら�
   const ui = await $.ui.mount(PANE('terminal'))
   expect((await ui.find({ type: 'Text', text: /empty-reply/ }))?.text).toContain('empty-reply')
   expect(await ui.find({ type: 'Button', text: /やり直す/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('まだ commit していないファイルの数を出す。メモ自身は数えない', async ($, on) => {
+  engine(on, { tokens: 160_000, status: ' M plugins/handoff/hooks/register.tsx\n?? notes.md\n?? .claude/handoff.md\n' })
+  await begin($)
+
+  await $.turn.complete(TURN)
+  await settle()
+
+  const ui = await $.ui.mount(PANE('terminal'))
+  expect((await ui.find({ type: 'Text', text: /未 commit/ }))?.text).toBe('未 commit 2 件')
   await ui.unmount()
 })

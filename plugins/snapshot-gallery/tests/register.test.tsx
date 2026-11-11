@@ -1,5 +1,7 @@
 import { expect, test, type TestBody } from 'claude-code/testing'
 
+import { bytesText, detail } from '../hooks/view'
+
 type On = Parameters<TestBody>[1]
 
 const ROOT = '/repo'
@@ -10,7 +12,7 @@ const BEFORE = DEFAULT_BEFORE
 
 const file = (name: string, mtimeMs: number) => ({ name, kind: 'file' as const, size: 1, mtimeMs, isLink: false })
 
-type Setup = { root?: string; after?: string; before?: string; failure?: Record<string, unknown>; exit?: Record<string, number>; missing?: string[]; extra?: string[]; toasts?: string[]; afterMs?: number; beforeMs?: number; isOpenBroken?: boolean; isSipsMissing?: boolean }
+type Setup = { root?: string; after?: string; before?: string; failure?: Record<string, unknown>; exit?: Record<string, number>; missing?: string[]; extra?: string[]; toasts?: string[]; afterMs?: number; beforeMs?: number; isOpenBroken?: boolean; isSipsMissing?: boolean; gone?: string[] }
 
 const engine = (on: On, ran: string[][], setup: Setup = {}) => {
   const root = setup.root ?? ROOT
@@ -20,7 +22,7 @@ const engine = (on: On, ran: string[][], setup: Setup = {}) => {
   const beforeMs = setup.beforeMs ?? 1
   const dirs = new Map([
     [AFTER, [file('review-balance-narrow.png', afterMs), file('review-list-narrow.png', afterMs), file('review-new-narrow.png', afterMs)]],
-    [BEFORE, [file('review-balance-narrow.png', beforeMs), file('review-list-narrow.png', beforeMs)]],
+    [BEFORE, [file('review-balance-narrow.png', beforeMs), file('review-list-narrow.png', beforeMs), ...(setup.gone ?? []).map(name => file(name, beforeMs))]],
   ])
   const hash: Record<string, string> = {
     [`${AFTER}/review-balance-narrow.png`]: 'b2',
@@ -119,8 +121,8 @@ test('前と後を pane の高さに収める', async ($, on) => {
   await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
 
   const ui = await $.ui.mount(PANE)
-  expect((await ui.find({ type: 'Image', key: '前' }))?.props).toMatchObject({ columns: 40, rows: 30 })
-  expect((await ui.find({ type: 'Image', key: '後' }))?.props).toMatchObject({ columns: 40, rows: 30 })
+  expect((await ui.find({ type: 'Image', key: '前' }))?.props).toMatchObject({ columns: 37, rows: 28 })
+  expect((await ui.find({ type: 'Image', key: '後' }))?.props).toMatchObject({ columns: 37, rows: 28 })
   await ui.unmount()
 })
 
@@ -415,4 +417,36 @@ test('設定が空か空白だけの時は、初めの値に戻す', { options: 
 
   await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
   expect(ran).toContainEqual(['mv', `${BEFORE}.pending`, BEFORE])
+})
+
+test('見出しに 1 枚 1 文字の並びを、画像の下に大きさとファイルの大きさを出す', async ($, on) => {
+  engine(on, [])
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: /^●·\+$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /大きさ 640×960 px · ファイル 1 B$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /🔴/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('前にはあって後に無い画像を、削除として数えて名前を出す', async ($, on) => {
+  engine(on, [], { gone: ['review-old-narrow.png'] })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: /🟢 新規 1\s+🔴 削除 1/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /後に無い画像：old-narrow$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('大きさとファイルの大きさは、前と違う時だけ前の値と差を出す', () => {
+  const one = { name: 'a', after: '/a.png', status: 'changed', width: 640, height: 960, afterMs: 2, bytes: 4096 } as const
+  expect(bytesText(512)).toBe('512 B')
+  expect(bytesText(3 * 1024 * 1024)).toBe('3.0 MB')
+  expect(detail(one)).toEqual({ size: '640×960 px', resized: '', bytes: '4 KB', gap: '' })
+  expect(detail({ ...one, before: '/b.png', beforeBytes: 1024, beforeWidth: 640, beforeHeight: 900 })).toEqual({ size: '640×960 px', resized: '前は 640×900', bytes: '4 KB', gap: '+3 KB' })
+  expect(detail({ ...one, before: '/b.png', beforeBytes: 8192, beforeWidth: 640, beforeHeight: 960 })).toEqual({ size: '640×960 px', resized: '', bytes: '4 KB', gap: '−4 KB' })
 })

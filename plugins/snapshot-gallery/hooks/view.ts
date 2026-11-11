@@ -37,4 +37,19 @@ export const fit = (one: SnapshotCase, columns: number, maxRows: number) => {
   return { columns: Math.max(1, Math.round((limit * 2 * one.width) / one.height)), rows: limit }
 }
 
+// バイトを「512 B」「124 KB」「1.2 MB」にする
+export const bytesText = (bytes: number) => (bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`)
+
+// 画像の下に出す 1 行：後の大きさ（px）とファイルの大きさ。前と違う時は、前の値と差も出す
+export const detail = (one: SnapshotCase) => {
+  const isResized = one.beforeWidth !== undefined && one.beforeHeight !== undefined && (one.beforeWidth !== one.width || one.beforeHeight !== one.height)
+  const gap = one.beforeBytes === undefined ? 0 : one.bytes - one.beforeBytes
+  return {
+    size: `${one.width}×${one.height} px`,
+    resized: isResized ? `前は ${one.beforeWidth}×${one.beforeHeight}` : '',
+    bytes: bytesText(one.bytes),
+    gap: gap === 0 ? '' : `${gap > 0 ? '+' : '−'}${bytesText(Math.abs(gap))}`,
+  }
+}
+
 export const label = (one: SnapshotCase, set: string) => (one.name.startsWith(`${set}-`) ? one.name.slice(set.length + 1) : one.name)

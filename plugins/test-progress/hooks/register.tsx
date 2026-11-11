@@ -17,7 +17,9 @@ const POLL_MS = 1000
 const GIVE_UP_MS = 60 * 60 * 1000
 const STALL_MS = 5 * 60 * 1000
 const SHOWN_FAILURES = 3
-const SIDE_COLUMNS = 34
+const SIDE_COLUMNS = 42
+// ログがこれだけ変わらなければ、帯に「動きなし」を出す
+const QUIET_MS = 30 * 1000
 
 type Pattern = 'commandPattern' | 'passedLine' | 'failedLine' | 'finishedLine' | 'succeededLine'
 
@@ -56,7 +58,7 @@ const watched = (options: Readonly<Record<string, unknown>>) => {
 
 // 見張り（走っているテストのコマンド）ごとの表示。id を鍵にして、重なった見張りが互いの表示と終わりを書き換えないようにする
 // shape の番号は、保存する値の形の版。形を変えた時に上げると、前の版の値は読まれず初めの値に戻る
-const runs = atom({ plugin: 'test-progress', key: 'runs' } as const, {}, { shape: 'runs-2' })
+const runs = atom({ plugin: 'test-progress', key: 'runs' } as const, {}, { shape: 'runs-3' })
 
 let serial = 0
 
@@ -97,15 +99,21 @@ const testLog = (command: string, cwd: string, spec: Watched) => {
 const count = (raw: string, spec: Watched) => {
   const plain = raw.replace(ANSI, '')
   let passed = 0
+  let latest = ''
   const failed: string[] = []
   const lines = plain.split('\n')
   for (const line of lines) {
-    if (spec.passed.test(line)) passed += 1
+    if (spec.passed.test(line)) {
+      passed += 1
+      // 通った行から印を外し、後ろの「(0.012 seconds)」を落として名前にする
+      latest = line.replace(spec.passed, '').replace(/\s+\(\d[^)]*\)\s*$/, '').trim() || latest
+    }
     const hit = line.match(spec.failed)
     const failure = hit === null ? undefined : (hit[1] ?? line.trim())
+    if (failure !== undefined) latest = failure
     if (failure !== undefined && !failed.includes(failure)) failed.push(failure)
   }
-  return { passed, failed, isFinished: lines.some(line => spec.finished.test(line)), isSucceeded: lines.some(line => spec.succeeded.test(line)) }
+  return { passed, failed, latest, isFinished: lines.some(line => spec.finished.test(line)), isSucceeded: lines.some(line => spec.succeeded.test(line)) }
 }
 
 const clock = (ms: number) => {
@@ -122,10 +130,11 @@ const finish = async ($: EngineInterface, id: string, isPassed: boolean, isLearn
     await $.store.set(`durationMs:${last.label}`, took)
   }
   await drop($, id)
+  const before = last.lastMs === null ? '' : `（前回 ${clock(last.lastMs)}）`
   $.ui.toast(
     isPassed && last.failed.length === 0
-      ? `✔ ${last.label} ${last.passed} 本通った · ${clock(took)}`
-      : `✖ ${last.label} ${last.failed.length} 本落ちた · ${clock(took)}`,
+      ? `✔ ${last.label} ${last.passed} 本通った · ${clock(took)}${before}`
+      : `✖ ${last.label} ${last.failed.length} 本落ちた（${last.passed} 本通った）· ${clock(took)}${before}`,
   )
 }
 
@@ -149,7 +158,7 @@ const tick = async ($: EngineInterface, id: string, spec: Watched, log: string, 
     return idle()
   }
   const counted = count(await $.fs.read(log), spec)
-  await put($, id, old => ({ ...old, now, passed: counted.passed, failed: counted.failed, isWritten: true }))
+  await put($, id, old => ({ ...old, now, passed: counted.passed, failed: counted.failed, latest: counted.latest, changedAt: pulse.changedAt, isWritten: true }))
   if (counted.isFinished) return counted.isSucceeded ? 'passed' : 'failed'
   return idle()
 }
@@ -167,6 +176,8 @@ const watch = async ($: EngineInterface, spec: Watched, log: string, label: stri
       now: startedAt,
       passed: 0,
       failed: [],
+      latest: '',
+      changedAt: startedAt,
       total: typeof total === 'number' ? total : null,
       lastMs: typeof lastMs === 'number' ? lastMs : null,
       isWritten: false,
@@ -250,6 +261,10 @@ export const register: Register = (on, options) => {
           const total = one.total === null ? null : Math.max(one.total, done)
           const elapsed = one.now - one.startedAt
           const left = one.lastMs === null ? null : one.lastMs - elapsed
+          const quiet = one.now - one.changedAt
+          const percent = total === null ? null : Math.floor((done / Math.max(1, total)) * 100)
+          // 1 分あたりの本数。走り始めてすぐは振れるので、5 秒たってから出す
+          const pace = elapsed >= 5000 && done > 0 ? Math.round((done / elapsed) * 60_000) : null
           const drawn = total === null ? null : bar(done, total, columns)
           return (
             <Box key={id} flexDirection="column">
@@ -263,12 +278,22 @@ export const register: Register = (on, options) => {
                   </Text>
                 )}
                 <Text>{total === null ? `${done} 本` : `${done} / ${total}`}</Text>
+                {percent !== null && <Text dimColor> · {percent}%</Text>}
               </Text>
               <Text>
                 <Text color="success">   ✔ {one.passed}</Text>
                 <Text color={one.failed.length > 0 ? 'error' : undefined} dimColor={one.failed.length === 0}>  ✖ {one.failed.length}</Text>
                 <Text dimColor>   ⏱ {clock(elapsed)}{left !== null && left > 0 ? ` · 残り約 ${clock(left)}` : ''}</Text>
+                {left !== null && left <= 0 && <Text color="warning"> · 前回より {clock(-left)} 長い</Text>}
+                {one.lastMs !== null && <Text dimColor> · 前回 {clock(one.lastMs)}</Text>}
+                {pace !== null && <Text dimColor> · {pace} 本/分</Text>}
+                {quiet >= QUIET_MS && <Text color="warning"> · ⏸ {clock(quiet)} 動きなし</Text>}
               </Text>
+              {one.latest !== '' && (
+                <Text dimColor wrap="truncate-end">
+                  {'   '}▸ {one.latest}
+                </Text>
+              )}
               {one.failed.slice(0, SHOWN_FAILURES).map((name, index) => (
                 <Text key={`${index}-${name}`} color="error">   ✖ {name}</Text>
               ))}

@@ -1,6 +1,6 @@
 import type { EngineInterface, SessionMessage } from 'claude-code'
 
-import type { Facts, Fill } from '../types'
+import type { Change, Facts, Fill } from '../types'
 
 import { lineCount } from './memo'
 
@@ -58,42 +58,60 @@ export const filesOf = (messages: Messages, base: string) => [
   ),
 ]
 
-// 「3 files changed, 10 insertions(+), 2 deletions(-)」から足した行と消した行を取る
-export const diffOf = (shortstat: string) => ({
-  added: Number(shortstat.match(/(\d+) insertion/)?.[1] ?? 0),
-  removed: Number(shortstat.match(/(\d+) deletion/)?.[1] ?? 0),
-})
+// `git diff --numstat` の「12\t3\tパス」を、パスごとの足した行と消した行にする。バイナリは「-」なので 0 とする
+export const numstatOf = (numstat: string) =>
+  new Map(
+    numstat
+      .split('\n')
+      .map(line => line.split('\t'))
+      .filter((cells): cells is [string, string, string] => cells.length === 3)
+      .map(([added, removed, path]) => [path, { added: Number(added) || 0, removed: Number(removed) || 0 }] as const),
+  )
 
-// 触ったファイルのうち、リポジトリの中にあるものの、まだ commit していない差分。未追跡のファイルは、行の数を足した行とする
-async function touchedDiffOf($: EngineInterface, root: Root, files: string[]) {
+// 触ったファイルごとの、まだ commit していない差分。未追跡のファイルは、行の数を足した行とする。リポジトリの外のファイルは 0 とする
+async function changesOf($: EngineInterface, root: Root, files: string[]): Promise<Change[]> {
   const inside = files.filter(file => !file.startsWith('/'))
-  if (!root.isRepo || inside.length === 0) return { added: 0, removed: 0 }
-  // [id] や * を含む名前を glob と読ませない
-  const [shortstat, others] = await Promise.all([
-    git($, root.base, ['--literal-pathspecs', 'diff', '--shortstat', 'HEAD', '--', ...inside]),
-    git($, root.base, ['--literal-pathspecs', 'ls-files', '--others', '--exclude-standard', '--', ...inside]),
+  const clean = (path: string): Change => ({ path, added: 0, removed: 0, isNew: false })
+  if (!root.isRepo || inside.length === 0) return files.map(clean)
+  // [id] や * を含む名前を glob と読ませない。日本語の名前を \343 の形にさせない
+  const [numstat, others] = await Promise.all([
+    git($, root.base, ['-c', 'core.quotepath=false', '--literal-pathspecs', 'diff', '--numstat', '--no-renames', 'HEAD', '--', ...inside]),
+    git($, root.base, ['-c', 'core.quotepath=false', '--literal-pathspecs', 'ls-files', '--others', '--exclude-standard', '--', ...inside]),
   ])
-  const tracked = diffOf(shortstat)
+  const tracked = numstatOf(numstat)
   const untracked = others.split('\n').filter(file => file !== '')
-  const lines = await Promise.all(
-    untracked.map(file =>
-      $.fs
-        .read(`${root.base}/${file}`)
-        .then(text => (text.trim() === '' ? 0 : lineCount(text)))
-        .catch(() => 0),
+  const lines = new Map(
+    await Promise.all(
+      untracked.map(file =>
+        $.fs
+          .read(`${root.base}/${file}`)
+          .then(text => [file, text.trim() === '' ? 0 : lineCount(text)] as const)
+          .catch(() => [file, 0] as const),
+      ),
     ),
   )
-  return { added: tracked.added + lines.reduce((sum, count) => sum + count, 0), removed: tracked.removed }
+  return files.map(path => {
+    const added = lines.get(path)
+    return added === undefined ? { ...clean(path), ...tracked.get(path) } : { path, added, removed: 0, isNew: true }
+  })
+}
+
+// まだ commit していないファイルの数。メモ自身は数えない
+async function dirtyOf($: EngineInterface, root: Root, memo: string) {
+  if (!root.isRepo) return null
+  const status = await git($, root.base, ['-c', 'core.quotepath=false', 'status', '--porcelain'])
+  return status.split('\n').filter(line => line.trim() !== '' && line.trim().replace(/^\S+\s+/, '') !== relative(root.base, memo)).length
 }
 
 export async function gather($: EngineInterface, root: Root, path: string, messages: Messages): Promise<Facts> {
   const files = filesOf(messages, root.base)
   // 互いに待たないので、まとめて取る
-  const [usage, previous, branch, diff] = await Promise.all([
+  const [usage, previous, branch, changes, dirty] = await Promise.all([
     $.session.usage().catch(() => undefined),
     $.fs.exists(path).then(isFound => (isFound ? $.fs.stat(path).catch(() => undefined) : undefined)),
     root.isRepo ? git($, root.base, ['branch', '--show-current']) : '',
-    touchedDiffOf($, root, files),
+    changesOf($, root, files),
+    dirtyOf($, root, path),
   ])
   return {
     repo: root.base.split('/').pop() ?? root.base,
@@ -103,6 +121,9 @@ export async function gather($: EngineInterface, root: Root, path: string, messa
     messages: messages.length,
     turns: messages.filter(message => message.role === 'user' && message.text.trim() !== '').length,
     files,
-    ...diff,
+    changes,
+    added: changes.reduce((sum, change) => sum + change.added, 0),
+    removed: changes.reduce((sum, change) => sum + change.removed, 0),
+    dirty,
   }
 }

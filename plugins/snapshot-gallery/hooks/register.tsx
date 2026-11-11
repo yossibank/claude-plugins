@@ -1,14 +1,14 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import { CHROME_ROWS, folders, MIN_IMAGE_ROWS, PANE, STATUS, TITLE, watcher } from './config'
+import { CHROME_ROWS, DOT, folders, MIN_IMAGE_ROWS, PANE, REMOVED, STATUS, TITLE, watcher } from './config'
 import { collect, discard, pngs, report, succeeded } from './files'
 import { isSetName, join, moveBase } from './path'
-import { cellWidth, fit, label, shown, stamp } from './view'
+import { cellWidth, detail, fit, label, shown, stamp } from './view'
 
 // shape の番号は、保存する値の形の版。形を変えた時に上げると、前の版の値は読まれず初めの値に戻る
 const gallery = atom({ plugin: 'snapshot-gallery', key: 'gallery' } as const, null, {
-  shape: 'gallery-3',
+  shape: 'gallery-4',
 })
 
 const open = ($: EngineInterface) => $.ui.open({ id: PANE, title: TITLE })
@@ -122,7 +122,7 @@ export const register: Register = (on, options) => {
     const following = list[position + 1]
 
     const half = Math.floor((e.props.bodyColumns - 1) / 2)
-    const size = current === undefined ? { columns: half - 2, rows: MIN_IMAGE_ROWS } : fit(current, Math.max(8, half - 2), e.props.scroll.bodyRows - CHROME_ROWS)
+    const size = current === undefined ? { columns: half - 2, rows: MIN_IMAGE_ROWS } : fit(current, Math.max(8, half - 2), e.props.scroll.bodyRows - CHROME_ROWS - (state.removed.length > 0 ? 1 : 0))
     const line = (rows: number) => Array.from({ length: rows }, () => '│').join('\n')
 
     const picture = (path: string | undefined, ms: number | undefined, key: string, title: string, titleWidth: number, isAfter: boolean) => (
@@ -151,6 +151,9 @@ export const register: Register = (on, options) => {
         <Text dimColor>{`╰─ ${stamp(ms)} ${'─'.repeat(Math.max(0, size.columns - 3 - cellWidth(stamp(ms))))}╯`}</Text>
       </Box>
     )
+    const about = current === undefined ? undefined : detail(current)
+    // 1 枚を 1 文字にした並び。pane に収まらない枚数の時は出さない
+    const dots = list.length <= e.props.bodyColumns - 6 ? list : []
     const afterTitle = current === undefined ? '' : ` · ${STATUS[current.status].mark} ${STATUS[current.status].word}`
 
     return (
@@ -168,8 +171,28 @@ export const register: Register = (on, options) => {
                 {STATUS[status].mark} <Text dimColor>{STATUS[status].word}</Text> {count(status)}{'   '}
               </Text>
             ))}
+            {state.removed.length > 0 && (
+              <Text>
+                {REMOVED.mark} <Text dimColor>{REMOVED.word}</Text> {state.removed.length}
+              </Text>
+            )}
+          </Text>
+          <Text>
+            {dots.map((one, at) => (
+              <Text key={one.name} color={STATUS[one.status].color} inverse={at === position} bold={at === position}>
+                {DOT[one.status]}
+              </Text>
+            ))}
+            {dots.length === 0 && <Text dimColor>{list.length} 枚</Text>}
           </Text>
         </Box>
+        {state.removed.length > 0 && (
+          <Text wrap="truncate-end">
+            {'  '}
+            {REMOVED.mark} <Text dimColor>後に無い画像：</Text>
+            {state.removed.map(name => (name.startsWith(`${state.set}-`) ? name.slice(state.set.length + 1) : name)).join('、')}
+          </Text>
+        )}
         <Text>
           {'  '}
           {previous !== undefined && <Text dimColor>‹ {label(previous, state.set)}  </Text>}
@@ -186,6 +209,15 @@ export const register: Register = (on, options) => {
           {current !== undefined && picture(current.before, current.beforeMs, '前', '', 2, false)}
           {current !== undefined && picture(current.after, current.afterMs, '後', afterTitle, 2 + cellWidth(afterTitle), true)}
         </Box>
+        {about !== undefined && (
+          <Text>
+            {'  '}
+            <Text dimColor>大きさ</Text> {about.size}
+            {about.resized !== '' && <Text color="warning">（{about.resized}）</Text>}
+            <Text dimColor> · ファイル</Text> {about.bytes}
+            {about.gap !== '' && <Text color="warning">（{about.gap}）</Text>}
+          </Text>
+        )}
         <Text> </Text>
         <Box flexDirection="row" gap={2}>
           <Button key="previous" plain hotkey="j" onPress={() => void select(position - 1).catch(report($, '前へ移ること'))}>‹ 前</Button>

@@ -35,11 +35,24 @@ export const cleanMemo = (raw: string) => {
 
 export const lineCount = (text: string) => text.trimEnd().split('\n').length
 
-const itemsOf = (text: string, name: string) =>
-  text
-    .split('\n')
-    .map(line => line.match(new RegExp(`^\\s*[-*]\\s*${name}[：:]\\s*(.*)$`))?.[1]?.trim())
-    .filter((item): item is string => item !== undefined && item !== '')
+// 「- 名前：a」の行と、その下に字下げして続く行を、項目の並びにする。同じ名前の行が何度あってもよい
+const fieldOf = (text: string, name: string) => {
+  const head = new RegExp(`^[-*]\\s*${name}[：:]\\s*(.*)$`)
+  const items: string[] = []
+  let isInside = false
+  for (const line of text.split('\n')) {
+    const first = line.match(head)?.[1]
+    if (first !== undefined) {
+      isInside = true
+      if (first.trim() !== '') items.push(first.trim())
+    } else if (isInside && /^\s+\S/.test(line)) {
+      items.push(line.trim().replace(/^(?:[-*]|\d+[.．])\s+/, ''))
+    } else {
+      isInside = false
+    }
+  }
+  return items
+}
 
 // 「次：1. a 2. b」を [a, b] にする。字下げして続く行も読む
 export const nextOf = (text: string) => {
@@ -58,4 +71,17 @@ export const nextOf = (text: string) => {
     .filter(item => item !== '')
 }
 
-export const unverifiedOf = (text: string) => itemsOf(text, '未検証')
+export const unverifiedOf = (text: string) => fieldOf(text, '未検証')
+
+export type Parts = { goal: string; decisions: string[]; next: string[]; files: string[]; unverified: string[] }
+
+// メモを項目ごとに分ける。ペインで項目ごとに描くために使う
+export const partsOf = (text: string): Parts => ({
+  goal: fieldOf(text, '目的').join(' '),
+  decisions: fieldOf(text, '決めたこと'),
+  next: nextOf(text),
+  files: fieldOf(text, '触ったファイル'),
+  unverified: unverifiedOf(text),
+})
+
+export const isEmptyParts = (parts: Parts) => parts.goal === '' && parts.decisions.length + parts.next.length + parts.files.length + parts.unverified.length === 0

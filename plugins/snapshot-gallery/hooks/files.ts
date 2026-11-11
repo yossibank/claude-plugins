@@ -76,7 +76,7 @@ export async function collect($: EngineInterface, root: string, set: string, dir
   const afterFiles = after.map(entry => join(afterDir, entry.name))
   const beforeFiles = [...before.keys()].map(name => join(beforeDir, name))
   const hash = await hashes($, [...afterFiles, ...beforeFiles])
-  const size = await sizes($, afterFiles)
+  const size = await sizes($, [...afterFiles, ...beforeFiles])
 
   const cases = after
     .sort((a, b) => a.name.localeCompare(b.name))
@@ -87,6 +87,7 @@ export async function collect($: EngineInterface, root: string, set: string, dir
       const afterHash = hash.get(afterPath)
       const status = beforePath === undefined ? 'added' : afterHash !== undefined && afterHash === hash.get(beforePath) ? 'same' : 'changed'
       const { width, height } = size.get(afterPath) ?? { width: 1, height: 1 }
+      const beforeSize = beforePath === undefined ? undefined : size.get(beforePath)
       return {
         name: entry.name.replace(/\.png$/, ''),
         after: afterPath,
@@ -96,8 +97,17 @@ export async function collect($: EngineInterface, root: string, set: string, dir
         height,
         afterMs: entry.mtimeMs,
         beforeMs: old?.mtimeMs,
+        bytes: entry.size,
+        beforeBytes: old?.size,
+        beforeWidth: beforeSize?.width,
+        beforeHeight: beforeSize?.height,
       }
     })
   const first = cases.findIndex(one => one.status !== 'same')
-  return { set, cases, index: Math.max(0, first), isChangedOnly: false }
+  const drawn = new Set(after.map(entry => entry.name))
+  const removed = [...before.keys()]
+    .filter(name => !drawn.has(name))
+    .sort((a, b) => a.localeCompare(b))
+    .map(name => name.replace(/\.png$/, ''))
+  return { set, cases, removed, index: Math.max(0, first), isChangedOnly: false }
 }

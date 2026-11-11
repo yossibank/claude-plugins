@@ -6,6 +6,9 @@ export type Step = { label: string; state: StepState; detail: string; ratio: num
 // fixed は会話を除いた文脈。/clear の後にも残る分
 export type Fill = { tokens: number; window: number; percent: number; fixed: number }
 
+// 触ったファイル 1 つの、まだ commit していない差分。isNew は未追跡
+export type Change = { path: string; added: number; removed: number; isNew: boolean }
+
 export type Facts = {
   repo: string
   branch: string
@@ -14,9 +17,13 @@ export type Facts = {
   messages: number
   turns: number
   files: string[]
-  // 触ったファイルの、まだ commit していない差分
+  // 触ったファイルごとの差分。files と同じ並び
+  changes: Change[]
+  // 触ったファイルの、まだ commit していない差分の合計
   added: number
   removed: number
+  // リポジトリの中の、まだ commit していないファイルの数。リポジトリの外では null
+  dirty: number | null
 }
 
 export type Cost = { input: number; cacheRead: number; output: number }

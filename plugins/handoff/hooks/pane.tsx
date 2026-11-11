@@ -1,8 +1,8 @@
 import type { Elements, RenderSurface } from 'claude-code'
 
-import type { Facts, Fill, Handoff, Step } from '../types'
+import type { Change, Facts, Fill, Handoff, Step } from '../types'
 
-import { MAX_LINES, nextOf, unverifiedOf } from './memo'
+import { isEmptyParts, MAX_LINES, partsOf } from './memo'
 
 type Ui = Elements['terminal']
 
@@ -19,6 +19,8 @@ const MARK = { waiting: '○', running: '◐', done: '✓', failed: '✖' } as c
 const COLOR = { waiting: 'inactive', running: 'warning', done: 'success', failed: 'error' } as const
 // 引き継いだ後の会話に、メモのほかに入る分の目安
 const MEMO_TOKENS = 1000
+// 触ったファイルの一覧に出す件数。残りは「ほか N 件」にまとめる
+const MAX_FILES = 6
 
 export const bar = (ratio: number, columns: number, full = '━', empty = '─') => {
   const filled = Math.max(0, Math.min(columns, Math.round(ratio * columns)))
@@ -41,6 +43,17 @@ export const ago = (ms: number) => {
   return hours < 24 ? `${hours} 時間前` : `${Math.floor(hours / 24)} 日前`
 }
 
+// 長いパスは、後ろのファイル名を残して前を「…」にする。フォルダの区切りがあれば、そこで切る
+export const tail = (path: string, columns: number) => {
+  if ([...path].length <= columns) return path
+  const kept = [...path].slice(1 - columns).join('')
+  const slash = kept.indexOf('/')
+  return `…${slash > 0 ? kept.slice(slash) : kept}`
+}
+
+// 差分の大きい順。同じなら元の並び
+export const largest = (changes: Change[]) => [...changes].sort((a, b) => b.added + b.removed - (a.added + a.removed))
+
 type Draw = { ui: Ui; now: Handoff; at: number; columns: number; actions: Actions }
 
 export function drawPane({ ui, now, at, columns, actions }: Draw) {
@@ -62,7 +75,7 @@ export function drawPane({ ui, now, at, columns, actions }: Draw) {
     </Box>
   )
 
-  // 数字のタイル：名前、大きな数字、下に補足か棒
+  // 数字のタイル：名前、大きな数字、棒、補足
   const tile = (label: string, value: string, sub: string, color: string, ratio?: number) => {
     const drawn = ratio === undefined ? undefined : bar(ratio, Math.max(6, half - 4), '▰', '▱')
     return (
@@ -71,14 +84,15 @@ export function drawPane({ ui, now, at, columns, actions }: Draw) {
         <Text bold color={color}>
           {value}
         </Text>
-        {drawn === undefined ? (
-          <Text dimColor wrap="truncate-end">
-            {sub}
-          </Text>
-        ) : (
+        {drawn !== undefined && (
           <Text>
             <Text color={color}>{drawn[0]}</Text>
             <Text dimColor>{drawn[1]}</Text>
+          </Text>
+        )}
+        {(sub !== '' || drawn === undefined) && (
+          <Text dimColor wrap="truncate-end">
+            {sub}
           </Text>
         )}
       </Box>
@@ -126,7 +140,7 @@ export function drawPane({ ui, now, at, columns, actions }: Draw) {
 
   const memoTile = () => {
     const writing = steps[2]
-    if (now.phase === 'ready') return tile('メモ', `${now.lines} 行`, '', 'success', Math.min(1, now.lines / MAX_LINES))
+    if (now.phase === 'ready') return tile('メモ', `${now.lines} 行`, `上限 ${MAX_LINES} 行 · ${now.chars} 字`, 'success', Math.min(1, now.lines / MAX_LINES))
     if (now.phase === 'building' && writing !== undefined && writing.state === 'running') return tile('メモ', writing.detail, '書いています', 'warning', writing.ratio)
     if (now.phase === 'failed') return tile('メモ', '失敗', writing?.detail === '' ? '' : `${writing?.detail ?? ''}で止まった`, 'error')
     return tile('メモ', '—', 'まだ', 'inactive')
@@ -136,7 +150,7 @@ export function drawPane({ ui, now, at, columns, actions }: Draw) {
     now.phase === 'idle' ? null : (
       <Box flexDirection="column" marginTop={1}>
         <Box columnGap={1}>
-          {fill === null ? tile('文脈', '—', '測れない', 'inactive') : tile('文脈', `${fill.percent}%`, '', 'warning', fill.percent / 100)}
+          {fill === null ? tile('文脈', '—', '測れない', 'inactive') : tile('文脈', `${fill.percent}%`, `${kilo(fill.tokens)} / ${kilo(fill.window)}`, fill.percent >= 90 ? 'error' : 'warning', fill.percent / 100)}
           {facts === null
             ? tile('会話', '—', '読んでいます', 'inactive')
             : tile('会話', `${facts.messages} 件`, `${facts.turns} ターン · ${clock(at - facts.sessionStartedAt)}`, isQuiet ? 'inactive' : 'success')}
@@ -168,6 +182,10 @@ export function drawPane({ ui, now, at, columns, actions }: Draw) {
             <Text color="success">↓</Text> 1 回の要求の入力 <Text bold>約 {times} 分の 1</Text>
           </Text>
         )}
+        <Text>
+          <Text dimColor>内訳</Text> 会話 <Text bold>{kilo(Math.max(0, now.fill.tokens - now.fill.fixed))}</Text>
+          <Text dimColor> · 区切っても残る分 {kilo(now.fill.fixed)}</Text>
+        </Text>
         <Text dimColor>要約に入ると、細かい決めごとが落ちやすい</Text>
       </Box>
     )
@@ -183,8 +201,9 @@ export function drawPane({ ui, now, at, columns, actions }: Draw) {
       </Box>
     ) : null
 
+  // 完成した後は、工程は 1 行にまとめてメモを上に出す
   const pipeline =
-    steps.length === 0 ? null : (
+    steps.length === 0 || now.phase === 'ready' ? null : (
       <Box flexDirection="column">
         {section('工程', `${steps.filter(step => step.state === 'done').length} / ${steps.length}`)}
         {steps.map(step => {
@@ -233,37 +252,87 @@ export function drawPane({ ui, now, at, columns, actions }: Draw) {
       <Box marginTop={1}>{button('hide', 'x', '✕', '隠す', 'quiet', actions.close)}</Box>
     )
 
-  const details =
-    now.phase === 'ready' ? (
+  // 触ったファイルの一覧。差分の大きい順に、ファイルごとの +追加 −削除 を出す
+  const files = (() => {
+    if (facts === null || facts.changes.length === 0) return null
+    const shown = largest(facts.changes).slice(0, MAX_FILES)
+    const rest = facts.changes.length - shown.length
+    return (
       <Box flexDirection="column">
-        {nextOf(now.text).length > 0 && section('次にすること', `${nextOf(now.text).length} 件`)}
-        {nextOf(now.text).map((item, index) => (
-          <Text key={`next-${index}`} wrap="truncate-end">
-            <Text color="suggestion" bold>
+        {section('触ったファイル', facts.dirty === null ? `${facts.changes.length} 件` : facts.dirty === 0 ? 'すべて commit 済み' : `未 commit ${facts.dirty} 件`)}
+        {shown.map(change => (
+          <Box key={`file-${change.path}`} justifyContent="space-between">
+            <Text wrap="truncate-end">
+              <Text color={change.isNew ? 'success' : change.added + change.removed > 0 ? 'warning' : 'inactive'}>{change.isNew ? '+' : change.added + change.removed > 0 ? '●' : '○'}</Text>{' '}
+              {tail(change.path, Math.max(8, width - 16))}
+            </Text>
+            {change.added + change.removed === 0 ? (
+              <Text dimColor>変更なし</Text>
+            ) : (
+              <Text>
+                {change.isNew && <Text dimColor>新規 </Text>}
+                <Text color="success">+{change.added}</Text> <Text color="error">−{change.removed}</Text>
+              </Text>
+            )}
+          </Box>
+        ))}
+        {rest > 0 && <Text dimColor>  ほか {rest} 件</Text>}
+      </Box>
+    )
+  })()
+
+  // メモの 1 項目：色の付いた名前の下に、中身を印付きで並べる
+  const part = (title: string, color: string, items: string[], mark: (index: number) => string, right?: string) =>
+    items.length === 0 ? null : (
+      <Box key={title} flexDirection="column" marginTop={1}>
+        <Box justifyContent="space-between">
+          <Text bold color={color}>
+            {title}
+          </Text>
+          {right !== undefined && <Text dimColor>{right}</Text>}
+        </Box>
+        {items.map((item, index) => (
+          <Text key={`${title}-${index}`}>
+            <Text color={color} bold>
               {' '}
-              {index + 1}{' '}
+              {mark(index)}{' '}
             </Text>
             {item}
           </Text>
         ))}
-        {unverifiedOf(now.text).map((item, index) => (
-          <Text key={`unverified-${index}`} wrap="truncate-end">
-            <Text color="warning"> ⚠ </Text>
-            <Text dimColor>未検証：</Text>
-            {item}
-          </Text>
-        ))}
-        {section('メモ', now.path.split('/').slice(-2).join('/'))}
-        <Box flexDirection="column" borderStyle="round" borderColor="inactive" paddingX={1}>
-          <Markdown text={now.text} />
-        </Box>
-        {now.cost !== null && (
-          <Text dimColor>
-            作るのにかかった量 入力 {kilo(now.cost.input)}（キャッシュ {Math.round((now.cost.cacheRead / Math.max(1, now.cost.input)) * 100)}%）· 出力 {kilo(now.cost.output)} · {now.seconds} 秒
-          </Text>
-        )}
       </Box>
-    ) : null
+    )
+
+  const details = (() => {
+    if (now.phase !== 'ready') return null
+    const parts = partsOf(now.text)
+    return (
+      <Box flexDirection="column">
+        {section('引き継ぎメモ', now.path.split('/').slice(-2).join('/'))}
+        {isEmptyParts(parts) ? (
+          // 決まりの形で返ってこなかった時は、全文をそのまま出す
+          <Box flexDirection="column" borderStyle="round" borderColor="inactive" paddingX={1}>
+            <Markdown text={now.text} />
+          </Box>
+        ) : (
+          <Box flexDirection="column" borderStyle="round" borderColor="success" paddingX={1} paddingBottom={1}>
+            {part('目的', 'success', parts.goal === '' ? [] : [parts.goal], () => '◎')}
+            {part('次にすること', 'suggestion', parts.next, index => String(index + 1), `${parts.next.length} 件`)}
+            {part('決めたこと', 'success', parts.decisions, () => '✓', `${parts.decisions.length} 件`)}
+            {part('未検証', 'warning', parts.unverified, () => '⚠', `${parts.unverified.length} 件`)}
+            {part('メモに書いたファイル', 'inactive', parts.files, () => '·')}
+          </Box>
+        )}
+        {files}
+        <Box marginTop={1}>
+          <Text dimColor>
+            工程 {steps.filter(step => step.state === 'done').length} / {steps.length} · {now.seconds} 秒
+            {now.cost !== null && ` · 入力 ${kilo(now.cost.input)}（キャッシュ ${Math.round((now.cost.cacheRead / Math.max(1, now.cost.input)) * 100)}%）· 出力 ${kilo(now.cost.output)}`}
+          </Text>
+        </Box>
+      </Box>
+    )
+  })()
 
   return (
     <Box flexDirection="column" paddingX={1}>
@@ -273,6 +342,7 @@ export function drawPane({ ui, now, at, columns, actions }: Draw) {
       {failure}
       {pipeline}
       {buttons}
+      {now.phase === 'ready' ? null : files}
       {details}
     </Box>
   )

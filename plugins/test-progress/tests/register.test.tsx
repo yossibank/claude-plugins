@@ -51,7 +51,7 @@ test('落ちたら落ちた本数を知らせる', async ($, on) => {
   await $.tool.call({ tool: 'Bash', command: 'make -C /work test SIMULATOR=x' })
 
   expect(seen.reads).toContain('/work/.build/test.log')
-  expect(seen.toasts).toEqual(['✖ make test 1 本落ちた · 0:00'])
+  expect(seen.toasts).toEqual(['✖ make test 1 本落ちた（1 本通った）· 0:00'])
 })
 
 test('裏で走らせた間は、前の回の数で進みの帯を出す', async ($, on) => {
@@ -135,7 +135,7 @@ test('壊れた正規表現は初めの値に戻る', { options: { passedLine: '
   await $.tool.call({ tool: 'Bash', command: 'make test' })
   await $.tool.call({ tool: 'Bash', command: 'make test' })
 
-  expect(seen.toasts).toEqual(['test-progress: commandPattern・passedLine の正規表現が正しくないので、初めの値で見張ります', '✔ make test 2 本通った · 0:00', '✔ make test 2 本通った · 0:00'])
+  expect(seen.toasts).toEqual(['test-progress: commandPattern・passedLine の正規表現が正しくないので、初めの値で見張ります', '✔ make test 2 本通った · 0:00', '✔ make test 2 本通った · 0:00（前回 0:00）'])
 })
 
 test('cd のあとの make は、動かした先を基点にする', async ($, on) => {
@@ -155,7 +155,7 @@ test('落ちた回は総数を覚えない', { options: OTHER }, async ($, on) =
 
   await $.tool.call({ tool: 'Bash', command: 'swift test' })
 
-  expect(seen.toasts).toEqual(['✖ swift test 1 本落ちた · 0:00'])
+  expect(seen.toasts).toEqual(['✖ swift test 1 本落ちた（3 本通った）· 0:00'])
   expect(seen.store.get('total:swift test')).toBe(10)
   expect(seen.store.has('durationMs:swift test')).toBe(false)
 })
@@ -364,4 +364,21 @@ test('run-check.sh の最初の引数のワークツリーを基点にする', a
   await $.tool.call({ tool: 'Bash', command: 'cd /wt/b && /s/run-check.sh $PWD "make test" make test' })
 
   expect(seen.reads).toEqual(['/wt/a/.build/test.log', '/wt/b/.build/test.log'])
+})
+
+test('帯に、割合・前回の時間・速さ・最後のテスト・動きの無い時間を出す', async ($, on) => {
+  const seen = fresh()
+  seen.store.set('total:make test', 4)
+  seen.store.set('durationMs:make test', 20_000)
+  const clock = mock.clock(on, { now: 1_000_000 })
+  engine(on, '    ✔ a() (0.1 seconds)\n    ✖ monthTotalsSkipFuture(), Expectation failed\n', seen, '/repo', 1_000_000, true)
+
+  await $.tool.call({ tool: 'Bash', command: 'make test', run_in_background: true })
+  await clock.advance(40_000)
+
+  const ui = await mountBand($)
+  expect(await ui.find({ type: 'Text', text: /2 \/ 4 · 50%/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /前回より 0:20 長い · 前回 0:20 · 3 本\/分 · ⏸ 0:39 動きなし/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /▸ monthTotalsSkipFuture\(\)$/ })).toBeDefined()
+  await ui.unmount()
 })

@@ -4,7 +4,8 @@ export const PANE = 'snapshot-gallery'
 export const TITLE = '📸 Snapshots'
 export const MAX_IMAGE_ROWS = 255
 export const MIN_IMAGE_ROWS = 6
-export const CHROME_ROWS = 10
+// 画像のほかに使う行：見出しの枠 5、名前 1、空き 2、画像の枠 2、詳しさ 1、ボタン 1
+export const CHROME_ROWS = 12
 // 設定が空か壊れている時の値。plugin.json の userConfig の default と同じにしておく
 export const DEFAULTS = {
   commandPattern: 'make\\s+(?:-C\\s+\\S+\\s+)?snapshot\\s+SNAPSHOT=([\\w.-]+)',
@@ -16,6 +17,9 @@ export const STATUS = {
   same: { mark: '⚪', word: '同じ', color: 'inactive' },
   added: { mark: '🟢', word: '新規', color: 'success' },
 } as const
+export const REMOVED = { mark: '🔴', word: '削除' } as const
+// 見出しの下の、1 枚を 1 文字で表す並びの文字
+export const DOT = { changed: '●', same: '·', added: '+' } as const
 
 export type Folders = { after: string; before: string }
 

@@ -18,7 +18,7 @@ const TICK_MS = 500
 const WRITE_MS_KEY = 'writeMs'
 
 // shape の番号は、保存する値の形の版。形を変えた時に上げると、前の版の値は読まれず初めの値に戻る
-const handoff = atom({ plugin: 'handoff', key: 'handoff' } as const, { phase: 'idle' }, { shape: 'handoff-3' })
+const handoff = atom({ plugin: 'handoff', key: 'handoff' } as const, { phase: 'idle' }, { shape: 'handoff-4' })
 // 「あとで」を押したら、その会話では勧めない
 const isLater = atom({ plugin: 'handoff', key: 'isLater' } as const, false)
 
