@@ -2,6 +2,7 @@ import { expect, mock, test, type TestBody } from 'claude-code/testing'
 
 import { cellWidth } from '../hooks/cell'
 import { FRAMES, SPRITE_COLUMNS, spriteCells } from '../hooks/sprite'
+import { firstLineOf } from '../hooks/tool'
 
 type On = Parameters<TestBody>[1]
 type Engine = Parameters<TestBody>[0]
@@ -18,7 +19,10 @@ type State = {
 const engine = (on: On, state: State = {}) => {
   const clock = mock.clock(on, { now: T0 })
   const blits: { key: string; cells: string }[] = []
+  // /clear で替わるセッションの id。テストが書き換える
+  const session = { id: 's1' }
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.id', () => ({ value: session.id }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('classic.SessionStart', () => ({}))
@@ -47,7 +51,7 @@ const engine = (on: On, state: State = {}) => {
   on('turn.step', async function* (_, e) {
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: state.usage ?? null } as never
   })
-  return { clock, blits }
+  return { clock, blits, session }
 }
 
 const start = ($: Engine) => $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
@@ -98,6 +102,12 @@ test('sprite: 立つコマは Claude Code のロゴと同じ字で、色を前�
   expect(FRAMES.every(frame => frame.every(row => [...row].length === SPRITE_COLUMNS))).toBe(true)
   const bytes = Uint8Array.from(atob(spriteCells(0, '#d77757')), char => char.charCodeAt(0))
   expect(new Uint32Array(bytes.buffer)[1]).toBe(0xd77757)
+})
+
+test('firstLineOf: 記号を外した最初の行と、その行が改行で閉じたかを返す', async () => {
+  expect(firstLineOf('\n## 直し')).toEqual({ line: '直し', isClosed: false })
+  expect(firstLineOf('## 直します\n続き')).toEqual({ line: '直します', isClosed: true })
+  expect(firstLineOf('  \n')).toEqual({ line: null, isClosed: false })
 })
 
 test('pane: 待っている間は、メインのカードを灰色の止まったアイコンで出す', async ($, on) => {
@@ -288,4 +298,52 @@ test('入力欄の上: pane が見えている間は出さない', async ($, on)
   const texts = (await ui.findAll({ type: 'Text' })).map(element => element.text)
   await ui.unmount()
   expect(texts).toEqual(['engine'])
+})
+
+test('/clear: classic.SessionStart で、それまでのサブエージェントを忘れる', async ($, on) => {
+  const { session } = engine(on)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await $.agent.spawn({ subagentType: 'Explore', description: '画面を調べる', prompt: 'p' } as never)
+  session.id = 's2'
+  await $.classic.SessionStart({ source: 'clear' })
+
+  const { texts } = await paneOf($)
+  expect(texts.some(text => /^▌Running/.test(text))).toBe(false)
+  expect(texts.some(text => /^Claude +待っています$/.test(text))).toBe(true)
+})
+
+test('/clear: classic.SessionStart が届かなくても、見張りでセッションの替わり目を見て忘れる', async ($, on) => {
+  const { clock, session } = engine(on)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await $.agent.spawn({ subagentType: 'Explore', description: '画面を調べる', prompt: 'p' } as never)
+  session.id = 's2'
+  await clock.advance(2000)
+
+  const { texts } = await paneOf($)
+  expect(texts.some(text => /^▌Running/.test(text))).toBe(false)
+})
+
+test('/clear: 見張りより先に次のターンが来ても、始める前に忘れる', async ($, on) => {
+  const { session } = engine(on)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await $.agent.spawn({ subagentType: 'Explore', description: '画面を調べる', prompt: 'p' } as never)
+  session.id = 's2'
+  await $.turn.start({ turnId: 't2', text: 'next' })
+
+  const { texts } = await paneOf($)
+  expect(texts.some(text => /^▌Running/.test(text))).toBe(false)
+})
+
+test('セッションが替わらなければ、classic.SessionStart が来ても忘れない', async ($, on) => {
+  engine(on)
+  await start($)
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await $.agent.spawn({ subagentType: 'Explore', description: '画面を調べる', prompt: 'p' } as never)
+  await $.classic.SessionStart({ source: 'compact' })
+
+  const { texts } = await paneOf($)
+  expect(texts.some(text => /^▌Running · 1$/.test(text))).toBe(true)
 })

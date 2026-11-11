@@ -14,6 +14,12 @@
 
 作業・題・ツールは切らずに、pane の幅で折り返して出す。トークンは、キャッシュから読んだ分と書いた分を入力に含める。
 
+## 📦 入れ方
+
+```sh
+/plugin install agent-progress --marketplace yossibank/claude-plugins
+```
+
 ## 🚀 コマンド
 
 | コマンド | 中身 |

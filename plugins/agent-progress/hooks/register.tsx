@@ -1,4 +1,4 @@
-import type { Register, Timer } from 'claude-code'
+import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import type { Phase } from '../types'
 
@@ -7,13 +7,14 @@ import { addWorkerUsage, currentWorkers, dropFinished, endAgentCall, finishWorke
 import { workingLine } from './band'
 import { draw } from './cell'
 import type { Seg } from './cell'
+import { hasSessionChanged } from './clear'
 import { PANE, SLACK_COLUMNS, TITLE, WATCH_MS } from './config'
 import { currentPaneShown, watchPane } from './pane'
 import { TN } from './palette'
 import { report } from './report'
 import { SPRITE_COLUMNS, SPRITE_ROWS, spriteCells } from './sprite'
 import { currentTasks, trackTasks } from './tasks'
-import { describe, firstLine, QUIET_TOOLS, toolName } from './tool'
+import { describe, firstLine, firstLineOf, QUIET_TOOLS, toolName } from './tool'
 import type { Args } from './tool'
 import { addMainUsage, currentTurn, endTurn, spentOf, startTurn } from './usage'
 import { mainCard, sectionLine, tasksLines, workerCard } from './view'
@@ -24,29 +25,42 @@ let watcher: Timer | undefined
 // アイコンと文字の間の空白
 const GUTTER_COLUMNS = 1
 
+// /clear は新しいセッションとして続き、state が初めに戻るのに session.start が来ない
+// classic.SessionStart は先に動くプラグインに止められることがあるので、ターンの始めと見張りでも id の変わり目を見る
+// リセットの途中に来た呼び出しも、それが終わるまで待ってから進む。待たないと、ターンの始めに書いた値をリセットが消す
+let resetting: Promise<void> = Promise.resolve()
+
+const followSession = async ($: EngineInterface) => {
+  if (await hasSessionChanged($)) resetting = forget($).catch(error => report($, 'セッションの切り替え', error))
+  await resetting
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     await forget($)
+    await hasSessionChanged($)
     await $.command.register({ name: 'agent-progress', description: 'メインとサブエージェントの作業を右の pane に出す' })
     $.ui.open({ id: PANE, title: TITLE }).catch(error => report($, 'pane を開くこと', error))
     watcher?.cancel()
     watcher = $.clock.every(WATCH_MS, () => {
-      watchPane($).catch(error => report($, 'pane の見張り', error))
+      followSession($)
+        .then(() => watchPane($))
+        .catch(error => report($, 'pane の見張り', error))
     })
     return started
   })
 
   on('classic.SessionStart', async ($, e, next) => {
     const started = await next(e)
-    // /clear は新しいセッションとして続き、state が初めに戻るのに session.start が来ないので、ここで忘れる
-    if (e.source === 'clear') await forget($)
+    await followSession($)
     return started
   })
 
   on('turn.start', async ($, e, next) => {
     const started = await next(e)
     if (e.agentId === undefined) {
+      await followSession($)
       await dropFinished($)
       await startTurn($)
       await act($, { isWorking: true, tool: null, phase: null, startedAt: null })
@@ -69,6 +83,8 @@ export const register: Register = on => {
     const stream = next(e)
     let text = ''
     let said: string | null = null
+    // 最初の行が閉じたら、届いた全文を読み直さない
+    let isSaid = false
     let isThinking = false
     let stepped: Awaited<typeof stream.result> | undefined
     try {
@@ -83,9 +99,10 @@ export const register: Register = on => {
         if (chunk.kind === 'thinking' && isMain && !isThinking && (await currentRunning($)).length === 0) {
           isThinking = true
           await act($, { phase: 'thinking' })
-        } else if (chunk.kind === 'text' && isMain) {
+        } else if (chunk.kind === 'text' && isMain && !isSaid) {
           text += chunk.text
-          const line = firstLine(text)
+          const { line, isClosed } = firstLineOf(text)
+          isSaid = isClosed
           if (line !== null && line !== said) {
             said = line
             await act($, { said, ...((await currentRunning($)).length === 0 && isThinking ? { phase: 'done' as Phase } : {}) })

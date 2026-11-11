@@ -8,12 +8,12 @@
 
 | ファイル | 中身 |
 | --- | --- |
-| `.claude-plugin/plugin.json` | `version` は `0.1.0`。`types` で `types/index.d.ts` を指す |
+| `.claude-plugin/plugin.json` | `version` は `0.1.0`。`author` は `{ "name": "yossibank" }`。`types` で `types/index.d.ts` を指す |
 | `tsconfig.json` | ほかのプラグインと同じ `extends` の 1 行 |
 | `hooks/` | `register.ts` か `register.tsx` がフックの入口 |
 | `types/index.d.ts` | 状態の型 |
 | `tests/` | テスト |
-| `README.md` | プラグインの説明 |
+| `README.md` | プラグインの説明。`/plugin install <名前> --marketplace yossibank/claude-plugins` の入れ方を書く |
 
 ```json
 { "extends": "./.claude-plugin/types/tsconfig.json" }

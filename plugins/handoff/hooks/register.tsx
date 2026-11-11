@@ -76,6 +76,8 @@ async function write($: EngineInterface, options: Options) {
   await setStep($, 2, { state: 'running', detail: '0 秒' })
   const state = await read($, handoff)
   const expectedMs = state.phase === 'building' ? state.expectedMs : GUESS_MS
+  // tick は繰り返すので、失敗は 1 回の書き出しにつき 1 度だけ知らせる
+  let tickFailed = false
   const timer = $.clock.every(TICK_MS, () => {
     void $.clock
       .now()
@@ -87,7 +89,11 @@ async function write($: EngineInterface, options: Options) {
           steps: old.steps.map((step, at) => (at === 2 && step.state === 'running' ? { ...step, detail: seconds(now - startedAt), ratio: Math.min(0.9, (now - startedAt) / expectedMs) } : step)),
         })),
       )
-      .catch(() => undefined)
+      .catch(error => {
+        if (tickFailed) return
+        tickFailed = true
+        report($, '経過の更新')(error)
+      })
   })
   let text: string
   let cost: Cost | null = null
@@ -170,6 +176,12 @@ const start = async ($: EngineInterface, options: Options) => {
 
 const reset = ($: EngineInterface) => update($, handoff, (): Handoff => ({ phase: 'idle' }))
 
+// 「あとで」にする。その会話では、もう勧めない
+async function postpone($: EngineInterface) {
+  await update($, isLater, () => true)
+  await reset($)
+}
+
 // 頼まれて開く時はキーを受けられるよう focus を渡す。勧める時は入力を奪わない
 const open = ($: EngineInterface, focus: boolean) => $.ui.open(focus ? { id: PANE, title: TITLE, focus: true } : { id: PANE, title: TITLE })
 
@@ -221,10 +233,7 @@ export const register: Register = (on, raw) => {
 
   // 勧めている間にペインを閉じたら、「あとで」と同じにする
   on('ui.close', async ($, e, next) => {
-    if (e.id === PANE && e.origin.kind === 'person' && (await read($, handoff)).phase === 'offered') {
-      await update($, isLater, () => true)
-      await reset($)
-    }
+    if (e.id === PANE && e.origin.kind === 'person' && (await read($, handoff)).phase === 'offered') await postpone($)
     return next(e)
   })
 
@@ -241,8 +250,7 @@ export const register: Register = (on, raw) => {
         start: () => void start($, options).catch(error => failWith($, errorText(error))),
         later: () =>
           void (async () => {
-            await update($, isLater, () => true)
-            await reset($)
+            await postpone($)
             await hide($)
           })().catch(report($, '閉じること')),
         begin: () =>
@@ -269,10 +277,7 @@ export const register: Register = (on, raw) => {
         // 閉じたら、その会話では勧めない
         close: () =>
           void (async () => {
-            if (now.phase !== 'building') {
-              await update($, isLater, () => true)
-              await reset($)
-            }
+            if (now.phase !== 'building') await postpone($)
             await hide($)
           })().catch(report($, '閉じること')),
       },

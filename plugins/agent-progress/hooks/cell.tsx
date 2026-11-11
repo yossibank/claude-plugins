@@ -55,11 +55,6 @@ export const fitSegs = (segs: readonly Seg[], width: number): Seg[] => {
   return out
 }
 
-export const padSegs = (segs: readonly Seg[], width: number): Seg[] => {
-  const fitted = fitSegs(segs, width)
-  return [...fitted, { text: ' '.repeat(Math.max(0, width - segWidth(fitted))) }]
-}
-
 // 幅で折り返して、切らずにすべて出す。色と太字は文字ごとに引き継ぐ
 export const wrapSegs = (segs: readonly Seg[], width: number): Seg[][] => {
   const lines: Seg[][] = [[]]

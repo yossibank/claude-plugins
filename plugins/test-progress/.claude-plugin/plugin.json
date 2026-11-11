@@ -1,7 +1,10 @@
 {
   "name": "test-progress",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "テストのコマンドの間、進みの棒と落ちたテストを入力欄の上に出し、終わったらトーストで知らせる",
+  "author": {
+    "name": "yossibank"
+  },
   "types": "./types/index.d.ts",
   "userConfig": {
     "commandPattern": {

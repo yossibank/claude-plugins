@@ -131,17 +131,20 @@ const finish = async ($: EngineInterface, id: string, isPassed: boolean, isLearn
 
 type Pulse = { changedAt: number; mtimeMs: number }
 
-const tick = async ($: EngineInterface, id: string, spec: Watched, log: string, startedAt: number, pulse: Pulse) => {
+// isFinal はコマンドが終わった後の読み。書き終わりが前の読みと同じ時刻に入っていても数え直す
+const tick = async ($: EngineInterface, id: string, spec: Watched, log: string, startedAt: number, pulse: Pulse, isFinal = false) => {
   const now = await $.clock.now()
   const mtimeMs = (await $.fs.exists(log)) ? (await $.fs.stat(log)).mtimeMs : 0
   const isFresh = mtimeMs >= startedAt - 1000
-  if (isFresh && mtimeMs !== pulse.mtimeMs) {
+  const isChanged = isFresh && mtimeMs !== pulse.mtimeMs
+  if (isChanged) {
     pulse.mtimeMs = mtimeMs
     pulse.changedAt = now
   }
   const isStalled = pulse.mtimeMs !== 0 && now - pulse.changedAt > STALL_MS
   const idle = () => (isStalled ? 'stalled' : now - startedAt > GIVE_UP_MS ? 'given-up' : 'running')
-  if (!isFresh) {
+  // ログが変わっていなければ、読み直さずに経った時間だけを進める
+  if (!isFresh || (!isChanged && !isFinal)) {
     await put($, id, old => ({ ...old, now }))
     return idle()
   }
@@ -196,7 +199,7 @@ const watch = async ($: EngineInterface, spec: Watched, log: string, label: stri
   return async (isPassed: boolean, isDenied = false) => {
     if (isDone) return
     if (isDenied) return stop('given-up')
-    const result = await tick($, id, spec, log, startedAt, pulse)
+    const result = await tick($, id, spec, log, startedAt, pulse, true)
     const exited = isPassed ? 'ok' : 'ng'
     await stop(result !== 'running' ? result : pulse.mtimeMs === 0 ? 'unread' : `exited-${exited}`)
   }
@@ -232,10 +235,8 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const now = await $.clock.now()
-    const all = Object.entries(await read($, runs))
-    const alive = all.filter(([, one]) => now - one.startedAt <= GIVE_UP_MS)
-    if (alive.length < all.length) await update($, runs, old => Object.fromEntries(Object.entries(old).filter(([, one]) => now - one.startedAt <= GIVE_UP_MS)))
-    const current = alive.filter(([, one]) => one.isWritten)
+    // 1 時間を超えた見張りは、見張り自身が止めて消す。描く時は書かずに出さないだけにする
+    const current = Object.entries(await read($, runs)).filter(([, one]) => one.isWritten && now - one.startedAt <= GIVE_UP_MS)
     if (e.props.hasSurvey || current.length === 0) return next(e)
 
     const { Box, Text } = $.ui.resolve(e)

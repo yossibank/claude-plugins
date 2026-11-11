@@ -259,6 +259,16 @@ test('ログが変わり続けても、1 時間たったら帯を消して止め
   expect(seen.toasts).toEqual([])
 })
 
+test('ログが変わらない間は、読み直さない', async ($, on) => {
+  const seen = fresh()
+  const clock = mock.clock(on, { now: 1_000_000 })
+  engine(on, '✔ a() (0.1 seconds)\n', seen, '/repo', 1_000_000, true)
+
+  await $.tool.call({ tool: 'Bash', command: 'make test', run_in_background: true })
+  await clock.advance(5000)
+  expect(seen.reads).toHaveLength(1)
+})
+
 test('落ちたテストは 3 本まで名前を出し、残りは「ほか N 本」にまとめる', async ($, on) => {
   const seen = fresh()
   const clock = mock.clock(on, { now: 1_000_000 })

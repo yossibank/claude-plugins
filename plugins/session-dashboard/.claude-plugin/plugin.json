@@ -1,7 +1,10 @@
 {
   "name": "session-dashboard",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "モデル・版・費用・リポジトリ・利用の上限・文脈の埋まり具合・セッションの経過を右の pane に出し、閉じている間は入力欄の上に出す。キャッシュが切れるまでの時間も出す",
+  "author": {
+    "name": "yossibank"
+  },
   "types": "./types/index.d.ts",
   "userConfig": {
     "cacheMinutes": {

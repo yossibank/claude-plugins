@@ -12,6 +12,8 @@ export type Config = {
   cacheMs: number
 }
 
-export const configure = (options: PluginOptions): Config => ({
-  cacheMs: Number(options.cacheMinutes ?? DEFAULTS.cacheMinutes) * 60_000,
-})
+// 空や数でない値は、既定の分数に戻す
+export const configure = (options: PluginOptions): Config => {
+  const minutes = Number(options.cacheMinutes)
+  return { cacheMs: (Number.isFinite(minutes) && minutes > 0 ? minutes : Number(DEFAULTS.cacheMinutes)) * 60_000 }
+}

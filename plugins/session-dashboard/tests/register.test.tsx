@@ -26,9 +26,12 @@ type State = {
 
 const engine = (on: On, percent: number, window = 200000, isShown = false, state: State = { isUsageBroken: false }) => {
   const clock = mock.clock(on, { now: T0 })
-  const counts = { panes: 0 }
+  const counts = { panes: 0, breakdowns: 0 }
   const toasts: string[] = []
+  // /clear で替わるセッションの id。テストが書き換える
+  const session = { id: 's1' }
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.id', () => ({ value: session.id }))
   on('session.cwd', () => ({ value: '/repo/sub' }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
@@ -52,7 +55,8 @@ const engine = (on: On, percent: number, window = 200000, isShown = false, state
     const stdout = GIT[e.argv.slice(1, 3).join(' ')] ?? '/repo\n'
     return { value: { exitCode: 0, stdout, stderr: '' } as never }
   })
-  on('session.usage', () => {
+  on('session.usage', (_, e) => {
+    if ((e as { breakdown?: string }).breakdown === 'summary') counts.breakdowns += 1
     if (state.isUsageBroken) return { deny: 'usage failed' }
     return {
     value: {
@@ -88,7 +92,7 @@ const engine = (on: On, percent: number, window = 200000, isShown = false, state
   on('turn.step', async function* (_, e) {
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null } as never
   })
-  return { clock, counts, toasts }
+  return { clock, counts, toasts, session }
 }
 
 const start = ($: Parameters<TestBody>[0]) => $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
@@ -280,6 +284,25 @@ test('options: キャッシュの寿命を変える', { options: { cacheMinutes:
   expect((await lines($)).some(line => /· . cold ─╯$/u.test(line))).toBe(true)
 })
 
+test('options: キャッシュの寿命が数でなければ、既定の 60 分で数える', { options: { cacheMinutes: 'x' } }, async ($, on) => {
+  const { clock } = engine(on, 35)
+  await start($)
+  await clock.advance(6 * MINUTE)
+
+  expect((await lines($)).some(line => /· . 54m ─╯$/u.test(line))).toBe(true)
+})
+
+test('サブエージェントのターンが終わっても、文脈を測り直さない', async ($, on) => {
+  const { counts } = engine(on, 41)
+  await start($)
+  const before = counts.breakdowns
+  await $.turn.complete(done('t2', 'a1'))
+  expect(counts.breakdowns).toBe(before)
+
+  await $.turn.complete(done())
+  expect(counts.breakdowns).toBe(before + 1)
+})
+
 test('usage が失敗したら前の値を残す', async ($, on) => {
   const state: { isUsageBroken: boolean; free?: number } = { isUsageBroken: false }
   engine(on, 41, 200000, false, state)
@@ -298,15 +321,45 @@ test('/clear で state が空になっても、Claude・リポジトリ・上限
     return next(e)
   })
   on('state.get', (_, e, next) => (cleared.has((e as { key: string }).key) ? ({ value: { value: undefined, version: 0 } } as never) : next(e)))
-  engine(on, 41)
+  const { session } = engine(on, 41)
   await start($)
   for (const key of ['claude', 'repo', 'fill']) cleared.add(key)
+  session.id = 's2'
   await $.classic.SessionStart({ source: 'clear' })
 
   const found = await lines($)
   expect(found.some(line => /Claude/.test(line))).toBe(true)
   expect(found.some(line => /owner\/app/.test(line))).toBe(true)
   expect(found.some(line => /│ 5h /.test(line))).toBe(true)
+})
+
+test('/clear: classic.SessionStart が届かなくても、見張りでセッションの替わり目を見て出し直す', async ($, on) => {
+  const cleared = new Set<string>()
+  on('state.set', (_, e, next) => {
+    cleared.delete((e as { key: string }).key)
+    return next(e)
+  })
+  on('state.get', (_, e, next) => (cleared.has((e as { key: string }).key) ? ({ value: { value: undefined, version: 0 } } as never) : next(e)))
+  const { clock, session } = engine(on, 41)
+  await start($)
+  for (const key of ['claude', 'repo', 'fill']) cleared.add(key)
+  session.id = 's2'
+  await clock.advance(2000)
+
+  const found = await lines($)
+  expect(found.some(line => /Claude/.test(line))).toBe(true)
+  expect(found.some(line => /owner\/app/.test(line))).toBe(true)
+})
+
+test('/clear: 見張りより先に次のターンが来ても、それまでの費用を数えない', async ($, on) => {
+  const { clock, session } = engine(on, 41)
+  await start($)
+  session.id = 's2'
+  await $.turn.start({ turnId: 't1', text: 'go' })
+  await $.session.measure({ context: { window: 200000 }, rateLimits: [], cost: { usd: 1.236 }, changed: ['cost'] } as never)
+  await clock.advance(30 * MINUTE)
+
+  expect((await lines($)).some(line => /\$0\.00\/h/u.test(line))).toBe(true)
 })
 
 test('測る前は、文脈の表に「まだ測っていません」と出す', async ($, on) => {
@@ -375,8 +428,9 @@ test('Session: 経った時間・ターン・呼び出しの数と、1 時間あ
 })
 
 test('Session: /clear の後は、それまでの費用を 1 時間あたりの費用に数えない', async ($, on) => {
-  const { clock } = engine(on, 41)
+  const { clock, session } = engine(on, 41)
   await start($)
+  session.id = 's2'
   await $.classic.SessionStart({ source: 'clear' })
   await $.session.measure({ context: { window: 200000 }, rateLimits: [], cost: { usd: 1.236 }, changed: ['cost'] } as never)
   await clock.advance(30 * MINUTE)
@@ -403,11 +457,12 @@ test('リポジトリが無ければ、リポジトリの表もブランチも�
 
 test('版を取れなかったら、覚えずに次の読み直しでもう一度取る', async ($, on) => {
   const state: State = { isUsageBroken: false, isVersionBroken: true }
-  engine(on, 41, 200000, false, state)
+  const { session } = engine(on, 41, 200000, false, state)
   await start($)
   expect((await lines($)).some(line => /v2\.1\.319/.test(line))).toBe(false)
 
   state.isVersionBroken = false
+  session.id = 's2'
   await $.classic.SessionStart({ source: 'clear' })
   expect((await lines($)).some(line => /v2\.1\.319/.test(line))).toBe(true)
 })

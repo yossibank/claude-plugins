@@ -3,7 +3,6 @@ import type { EngineInterface } from 'claude-code'
 
 import type { Repo } from '../types'
 
-
 const repo = atom({ plugin: 'session-dashboard', key: 'repo' } as const, null)
 
 const GIT_MS = 2000

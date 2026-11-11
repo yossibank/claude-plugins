@@ -13,4 +13,8 @@
 
 ## 🚀 入れ方
 
-[ルートの README の入れ方](../../README.md#-入れ方)
+先に `brew install terminal-browser` で terminal-browser を入れる。
+
+```sh
+/plugin install pr-browser --marketplace yossibank/claude-plugins
+```
