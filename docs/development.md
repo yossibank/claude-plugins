@@ -48,7 +48,6 @@
 | `-dashboard` | 数字をずっと出しておく | `session-dashboard`、`ios-simulator-dashboard` |
 | `-gallery` | 画像を並べる | `ios-snapshot-gallery` |
 | `-browser` | ページを開く | `git-pr-browser` |
-| `-steps` | 次にすることの候補を出す | `session-next-steps` |
 
 前の語が何をするかまで表している時は、`agent-progress` のように真ん中の語を省く。動作そのものが役目のものは、`session-handoff` のように後ろを動詞 1 語にしてもよい。表に無い領域や見せ方の時は、表に語を足してから名前を付ける。
 

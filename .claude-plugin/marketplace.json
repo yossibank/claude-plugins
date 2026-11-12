@@ -44,11 +44,6 @@
       "name": "session-handoff",
       "source": "./plugins/session-handoff",
       "description": "文脈が埋まってきたら右のペインで引き継ぎを勧め、引き継ぎメモを書いて、新しい会話へ渡す"
-    },
-    {
-      "name": "session-next-steps",
-      "source": "./plugins/session-next-steps",
-      "description": "ターンが終わるたびに、返事が勧めたコマンド・テスト・commit・PR・区切りから次にすることを 3 つまで選び、入力欄の上にボタンで出す。モデルに選ばせることもできる"
     }
   ]
 }

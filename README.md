@@ -16,7 +16,6 @@
 | [ios-test-progress](plugins/ios-test-progress/README.md) | テストのコマンドの間、進みの棒と落ちたテストとその理由を入力欄の上に出し、終わったらトーストで知らせる。前の回から直った数と、遅いテストも出す。コマンドの出力を `.build/test.log` に残しておく |
 | [session-dashboard](plugins/session-dashboard/README.md) | モデル・バージョン・費用・リポジトリ・利用の上限・文脈の埋まり具合・セッションの経過を右の pane に出す。閉じている間は入力欄の上に出す |
 | [session-handoff](plugins/session-handoff/README.md) | 文脈が埋まってきたら、右のペインで引き継ぎを勧める。引き継ぎメモを `.claude/handoff.md` に書き、`/clear` した新しい会話の入力欄に入れる |
-| [session-next-steps](plugins/session-next-steps/README.md) | ターンの終わりに、次にすることを 3 つまで入力欄の上にボタンで出す。押すと、その指示が入力欄に入る |
 
 ## 🗺️ 全体像
 
@@ -38,7 +37,7 @@ flowchart LR
 | TypeScript | 5.4 以上 | `make types` での型の検査 |
 | jq | 最新 | `make verify` の version と description の検査 |
 | terminal-browser | 最新 | git-pr-browser |
-| GitHub CLI（`gh`） | 最新 | git-pr-browser の PR の状態、session-next-steps の PR の有無 |
+| GitHub CLI（`gh`） | 最新 | git-pr-browser の PR の状態 |
 | Xcode | — | ios-simulator-dashboard の `xcrun simctl`、ios-build-progress が見張る `xcodebuild` |
 | macOS | — | ios-snapshot-gallery の `shasum`・`sips`・`open` |
 
