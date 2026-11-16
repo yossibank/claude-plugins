@@ -24,6 +24,18 @@ let poller: Timer | undefined
 let running: Promise<void> | undefined
 let queued: { target?: string } | undefined
 
+// 開いているブラウザの key。今のターミナルのタブにあるものを先に選ぶ。無い時や読めない時は undefined
+const browserKey = (stdout: string): string | undefined => {
+  try {
+    const listed = JSON.parse(stdout) as { browsers?: { key?: unknown; inCurrentTab?: unknown }[] }
+    const browsers = (listed.browsers ?? []).filter(browser => typeof browser.key === 'string')
+    const chosen = browsers.find(browser => browser.inCurrentTab === true) ?? browsers[0]
+    return typeof chosen?.key === 'string' ? chosen.key : undefined
+  } catch {
+    return undefined
+  }
+}
+
 const pollMs = (options: Readonly<Record<string, unknown>>) => {
   const seconds = Number(options.pollSeconds)
   return (Number.isFinite(seconds) && seconds >= 10 ? seconds : DEFAULTS.pollSeconds) * 1000
@@ -87,10 +99,18 @@ const report = ($: EngineInterface) => (error: unknown) => {
 // $ を受け取る関数は、ファイルの一番上に置く。待たずに取り直し、失敗はトーストで知らせる
 const later = ($: EngineInterface, wait: number, target?: string) => void refresh($, wait, target).catch(report($))
 
+// ブラウザが開いていればタブを足し、無ければペインを分けて開く
 const open = ($: EngineInterface, url: string) => {
   const split = columns !== undefined && columns < NARROW_COLUMNS ? 'down' : 'right'
   void $.process
-    .run(['terminal-browser', 'open', url, '--split', split])
+    .run(['terminal-browser', 'ls', '--all', '--json'])
+    .then(({ exitCode, stdout }) => {
+      const key = exitCode === 0 ? browserKey(stdout) : undefined
+      const argv = key === undefined
+        ? ['terminal-browser', 'open', url, '--split', split]
+        : ['terminal-browser', 'new-tab', '--browser', key, url]
+      return $.process.run(argv)
+    })
     .then(({ exitCode, stderr }) => {
       if (exitCode !== 0) $.ui.toast(`git-pr-browser: 開けませんでした: ${stderr.trim().slice(0, 80)}`)
     })
