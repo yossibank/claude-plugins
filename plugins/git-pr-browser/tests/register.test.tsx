@@ -8,7 +8,8 @@ const CREATE = ['gh', 'pr', 'create'].join(' ')
 type On = Parameters<TestBody>[1]
 
 // view は gh pr view の答え（null は PR なし）。threads は未解決のスレッドの答え。gh は gh に渡した引数の記録
-type Opening = { exitCode?: number; stderr?: string; isMissing?: boolean; toasts?: string[]; view?: () => string | null; threads?: string; gh?: string[][] }
+// browsers は terminal-browser ls --all --json の答え（省くとブラウザなし）
+type Opening = { exitCode?: number; stderr?: string; isMissing?: boolean; toasts?: string[]; view?: () => string | null; threads?: string; gh?: string[][]; browsers?: string }
 
 const setup = (on: On, text: string, opened: string[][], opening: Opening = {}) => {
   on('tool.call', () => ({ result: { stdout: text, stderr: '' }, text }))
@@ -22,8 +23,12 @@ const setup = (on: On, text: string, opened: string[][], opening: Opening = {}) 
       const stdout = e.argv[1] === 'api' ? (opening.threads ?? null) : (opening.view?.() ?? null)
       return { value: { exitCode: stdout === null ? 1 : 0, stdout: stdout ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     }
-    opened.push([...e.argv])
     if (opening.isMissing === true) throw new Error('not found')
+    if (e.argv[1] === 'ls') {
+      const stdout = opening.browsers ?? JSON.stringify({ self: null, browsers: [] })
+      return { value: { exitCode: opening.exitCode ?? 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    opened.push([...e.argv])
     return { value: { exitCode: opening.exitCode ?? 0, stdout: '', stderr: opening.stderr ?? '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('ui.toast', (_, e) => {
@@ -42,6 +47,45 @@ test('PR を作った URL を右に開く', async ($, on) => {
   setup(on, `Creating pull request\n${URL}\n`, opened)
 
   await $.tool.call({ tool: 'Bash', command: `${CREATE} --base main --title t --body-file b.md` })
+  await settle()
+
+  expect(opened).toEqual([['terminal-browser', 'open', URL, '--split', 'right']])
+})
+
+test('ブラウザが開いていれば、今のタブのブラウザにタブを足す', async ($, on) => {
+  const opened: string[][] = []
+  const browsers = JSON.stringify({
+    self: null,
+    browsers: [
+      { key: '100-1', inCurrentTab: false },
+      { key: '200-1', inCurrentTab: true },
+    ],
+  })
+  setup(on, `${URL}\n`, opened, { browsers })
+
+  await $.tool.call({ tool: 'Bash', command: `${CREATE} --title t` })
+  await settle()
+
+  expect(opened).toEqual([['terminal-browser', 'new-tab', '--browser', '200-1', URL]])
+})
+
+test('今のタブにブラウザが無ければ、最初のブラウザにタブを足す', async ($, on) => {
+  const opened: string[][] = []
+  const browsers = JSON.stringify({ self: null, browsers: [{ key: '100-1', inCurrentTab: false }] })
+  setup(on, `${URL}\n`, opened, { browsers })
+
+  await $.tool.call({ tool: 'Bash', command: `${CREATE} --title t` })
+  await settle()
+
+  expect(opened).toEqual([['terminal-browser', 'new-tab', '--browser', '100-1', URL]])
+})
+
+test('ブラウザの一覧が読めない時は、ペインを分けて開く', async ($, on) => {
+  const opened: string[][] = []
+  setup(on, `${URL}\n`, opened, { browsers: 'not json' })
+
+  await $.tool.call({ tool: 'Bash', command: `${CREATE} --title t` })
+  await settle()
 
   expect(opened).toEqual([['terminal-browser', 'open', URL, '--split', 'right']])
 })
@@ -63,6 +107,7 @@ test('会話が 128 列より狭い時は下に開く', async ($, on) => {
   })
   await ui.unmount()
   await $.tool.call({ tool: 'Bash', command: `${CREATE} --title t` })
+  await settle()
 
   expect(opened).toEqual([['terminal-browser', 'open', URL, '--split', 'down']])
 })
@@ -72,6 +117,7 @@ test('出力の最後の PR の URL を開く', async ($, on) => {
   setup(on, `https://github.com/yossibank/kakeibot/pull/1\n${URL}\n`, opened)
 
   await $.tool.call({ tool: 'Bash', command: `${CREATE} --title t` })
+  await settle()
 
   expect(opened).toEqual([['terminal-browser', 'open', URL, '--split', 'right']])
 })
@@ -246,6 +292,8 @@ test('/pr で状態を取り直し、ページを開く', async ($, on) => {
   setup(on, '', opened, { view: () => VIEW({ statusCheckRollup: [] }) })
 
   const ran = await $.command.run({ command: 'pr', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 140 } })
+
+  await settle()
 
   expect(ran).toMatchObject({ text: 'PR #346 を開きました。' })
   expect(opened).toEqual([['terminal-browser', 'open', URL, '--split', 'right']])
