@@ -52,4 +52,11 @@ export const detail = (one: SnapshotCase) => {
   }
 }
 
-export const label = (one: SnapshotCase, set: string) => (one.name.startsWith(`${set}-`) ? one.name.slice(set.length + 1) : one.name)
+const fileLabel = (one: SnapshotCase, set: string) => (one.name.startsWith(`${set}-`) ? one.name.slice(set.length + 1) : one.name)
+const withVariant = (title: string, variant: string | undefined) => (variant === undefined || variant === '' ? title : `${title}（${variant}）`)
+
+// 画面の名前があればそれを、無ければセットの名前を外したファイル名を出す
+export const label = (one: SnapshotCase, set: string) => (one.title === undefined ? fileLabel(one, set) : withVariant(one.title, one.variant))
+
+// 前と次に出す短い名前。画面の名前の最後の段だけを使う
+export const short = (one: SnapshotCase, set: string) => (one.title === undefined ? fileLabel(one, set) : withVariant(one.title.split(' › ').at(-1) ?? one.title, one.variant))

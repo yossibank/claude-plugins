@@ -68,6 +68,29 @@ async function sizes($: EngineInterface, files: string[]) {
   return found
 }
 
+// index.jsonl の 1 行は { file, title, variant }。読めない行と、ファイルの無い行は飛ばす
+async function titles($: EngineInterface, dir: string) {
+  const found = new Map<string, { title: string; variant: string }>()
+  const path = join(dir, 'index.jsonl')
+  if (!(await $.fs.exists(path))) return found
+  const text = await $.fs.read(path).catch((error: unknown) => {
+    report($, '画面の名前の読み込み')(error)
+    return ''
+  })
+  for (const line of text.split('\n')) {
+    try {
+      const entry: unknown = JSON.parse(line)
+      if (typeof entry !== 'object' || entry === null) continue
+      const { file, title, variant } = entry as Record<string, unknown>
+      if (typeof file !== 'string' || typeof title !== 'string') continue
+      found.set(file, { title, variant: typeof variant === 'string' ? variant : '' })
+    } catch {
+      continue
+    }
+  }
+  return found
+}
+
 export async function collect($: EngineInterface, root: string, set: string, dirs: Folders): Promise<Gallery> {
   const afterDir = join(root, dirs.after, set)
   const beforeDir = join(root, dirs.before, set)
@@ -77,6 +100,9 @@ export async function collect($: EngineInterface, root: string, set: string, dir
   const beforeFiles = [...before.keys()].map(name => join(beforeDir, name))
   const hash = await hashes($, [...afterFiles, ...beforeFiles])
   const size = await sizes($, [...afterFiles, ...beforeFiles])
+  const named = await titles($, afterDir)
+  // 同じ回に描いた画像で、ハッシュが同じものは先の 1 枚にまとめる
+  const firstOfHash = new Map<string, string>()
 
   const cases = after
     .sort((a, b) => a.name.localeCompare(b.name))
@@ -88,8 +114,11 @@ export async function collect($: EngineInterface, root: string, set: string, dir
       const status = beforePath === undefined ? 'added' : afterHash !== undefined && afterHash === hash.get(beforePath) ? 'same' : 'changed'
       const { width, height } = size.get(afterPath) ?? { width: 1, height: 1 }
       const beforeSize = beforePath === undefined ? undefined : size.get(beforePath)
+      const name = entry.name.replace(/\.png$/, '')
+      const sameAs = afterHash === undefined ? undefined : firstOfHash.get(afterHash)
+      if (afterHash !== undefined && sameAs === undefined) firstOfHash.set(afterHash, name)
       return {
-        name: entry.name.replace(/\.png$/, ''),
+        name,
         after: afterPath,
         before: beforePath,
         status,
@@ -101,13 +130,17 @@ export async function collect($: EngineInterface, root: string, set: string, dir
         beforeBytes: old?.size,
         beforeWidth: beforeSize?.width,
         beforeHeight: beforeSize?.height,
+        title: named.get(entry.name)?.title,
+        variant: named.get(entry.name)?.variant,
+        sameAs,
       }
     })
-  const first = cases.findIndex(one => one.status !== 'same')
+  const hasChange = cases.some(one => one.status !== 'same')
   const drawn = new Set(after.map(entry => entry.name))
   const removed = [...before.keys()]
     .filter(name => !drawn.has(name))
     .sort((a, b) => a.localeCompare(b))
     .map(name => name.replace(/\.png$/, ''))
-  return { set, cases, removed, index: Math.max(0, first), isChangedOnly: false }
+  // 変わったものがあれば、初めから変わったものだけを出す
+  return { set, cases, removed, page: join(afterDir, 'index.html'), index: 0, isChangedOnly: hasChange }
 }

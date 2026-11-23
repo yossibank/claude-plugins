@@ -1,17 +1,26 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
+import type { Gallery } from '../types'
+
 import { CHROME_ROWS, DOT, folders, MIN_IMAGE_ROWS, PANE, REMOVED, STATUS, TITLE, watcher } from './config'
 import { collect, discard, pngs, report, succeeded } from './files'
 import { isSetName, join, moveBase } from './path'
-import { cellWidth, detail, fit, label, shown, stamp } from './view'
+import { page } from './page'
+import { cellWidth, detail, fit, label, short, shown, stamp } from './view'
 
 // shape の番号は、保存する値の形の版。形を変えた時に上げると、前の版の値は読まれず初めの値に戻る
 const gallery = atom({ plugin: 'ios-snapshot-gallery', key: 'gallery' } as const, null, {
-  shape: 'gallery-4',
+  shape: 'gallery-5',
 })
 
 const open = ($: EngineInterface) => $.ui.open({ id: PANE, title: TITLE })
+
+// 一覧のページを書き直す。書けなくても pane はそのまま出す
+const writePage = ($: EngineInterface, state: Gallery) => $.fs.write(state.page, page(state)).then(() => true, (error: unknown) => {
+  report($, '一覧のページの書き込み')(error)
+  return false
+})
 
 export const register: Register = (on, options) => {
   const dirs = folders(options)
@@ -30,6 +39,7 @@ export const register: Register = (on, options) => {
       const found = await collect($, await $.session.cwd(), set, dirs)
       if (found.cases.length === 0) return { text: `${set} の画像がありません` }
       await update($, gallery, () => found)
+      await writePage($, found)
     }
     const state = await read($, gallery)
     if (state === null) return { text: 'まだ描いたスナップショットがありません。/snapshots <セット> で開けます。' }
@@ -98,6 +108,7 @@ export const register: Register = (on, options) => {
     })
     if (drawn !== null && drawn.cases.length > 0) {
       await update($, gallery, () => drawn)
+      await writePage($, drawn)
       void open($).catch(report($, '画廊の表示'))
     }
     return ran
@@ -195,13 +206,13 @@ export const register: Register = (on, options) => {
         )}
         <Text>
           {'  '}
-          {previous !== undefined && <Text dimColor>‹ {label(previous, state.set)}  </Text>}
+          {previous !== undefined && <Text dimColor>‹ {short(previous, state.set)}  </Text>}
           {current !== undefined && (
             <Text bold inverse>
               {' '}{label(current, state.set)}{' '}
             </Text>
           )}
-          {following !== undefined && <Text dimColor>  {label(following, state.set)} ›</Text>}
+          {following !== undefined && <Text dimColor>  {short(following, state.set)} ›</Text>}
           {list.length === 0 && <Text dimColor>変わったものはありません</Text>}
         </Text>
         <Text> </Text>
@@ -225,6 +236,7 @@ export const register: Register = (on, options) => {
           <Button key="changed-only" plain hotkey="c" onPress={() => void update($, gallery, old => (old === null ? old : { ...old, isChangedOnly: !old.isChangedOnly, index: 0 })).catch(report($, '絞り込みの切り替え'))}>
             {state.isChangedOnly ? 'すべて' : '変更だけ'}
           </Button>
+          <Button key="browser" plain hotkey="b" onPress={() => void writePage($, state).then(isWritten => isWritten && succeeded($, ['open', state.page], 'ブラウザーで開くこと'))}>ブラウザー</Button>
           {current !== undefined && (
             <Button key="finder" plain hotkey="o" onPress={() => void succeeded($, ['open', '-R', current.after], 'Finder で開くこと')}>Finder</Button>
           )}
