@@ -13,7 +13,7 @@ const BEFORE = DEFAULT_BEFORE
 
 const file = (name: string, mtimeMs: number) => ({ name, kind: 'file' as const, size: 1, mtimeMs, isLink: false })
 
-type Setup = { root?: string; after?: string; before?: string; failure?: Record<string, unknown>; exit?: Record<string, number>; missing?: string[]; extra?: string[]; toasts?: string[]; afterMs?: number; beforeMs?: number; isOpenBroken?: boolean; isSipsMissing?: boolean; gone?: string[]; index?: string; writes?: Map<string, string>; hashes?: Record<string, string> }
+type Setup = { root?: string; after?: string; before?: string; failure?: Record<string, unknown>; exit?: Record<string, number>; missing?: string[]; extra?: string[]; toasts?: string[]; afterMs?: number; beforeMs?: number; isOpenBroken?: boolean; isSipsMissing?: boolean; gone?: string[]; index?: string; writes?: Map<string, string>; hashes?: Record<string, string>; isAllSame?: boolean }
 
 const engine = (on: On, ran: string[][], setup: Setup = {}) => {
   const root = setup.root ?? ROOT
@@ -23,7 +23,7 @@ const engine = (on: On, ran: string[][], setup: Setup = {}) => {
   const beforeMs = setup.beforeMs ?? 1
   const dirs = new Map([
     [AFTER, [file('review-balance-narrow.png', afterMs), file('review-list-narrow.png', afterMs), file('review-new-narrow.png', afterMs)]],
-    [BEFORE, [file('review-balance-narrow.png', beforeMs), file('review-list-narrow.png', beforeMs), ...(setup.gone ?? []).map(name => file(name, beforeMs))]],
+    [BEFORE, [file('review-balance-narrow.png', beforeMs), file('review-list-narrow.png', beforeMs), ...(setup.isAllSame === true ? [file('review-new-narrow.png', beforeMs)] : []), ...(setup.gone ?? []).map(name => file(name, beforeMs))]],
   ])
   const hash: Record<string, string> = {
     [`${AFTER}/review-balance-narrow.png`]: 'b2',
@@ -31,6 +31,7 @@ const engine = (on: On, ran: string[][], setup: Setup = {}) => {
     [`${AFTER}/review-list-narrow.png`]: 'l1',
     [`${BEFORE}/review-list-narrow.png`]: 'l1',
     [`${AFTER}/review-new-narrow.png`]: 'n1',
+    ...(setup.isAllSame === true ? { [`${AFTER}/review-balance-narrow.png`]: 'b1', [`${BEFORE}/review-new-narrow.png`]: 'n1' } : {}),
     ...setup.hashes,
   }
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -518,4 +519,28 @@ test('一覧のページは、前の画像が無い新規の画面も差分の�
   const one = { name: 'set-a', after: '/o/set-a.png', status: 'added', width: 640, height: 960, afterMs: 2, bytes: 1 } as const
   const html = page({ set: 'set', cases: [one], removed: [], page: '/o/index.html', index: 0, isChangedOnly: true })
   expect(html).toContain('<div class="diff"><img src="file:///o/set-a.png" alt="後"></div>')
+})
+
+test('変わった画像があれば、描いた後に一覧をブラウザーで開く', async ($, on) => {
+  const ran: string[][] = []
+  engine(on, ran)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+  expect(ran).toContainEqual(['open', `${AFTER}/index.html`])
+})
+
+test('全部同じなら、描いた後にブラウザーを開かない', async ($, on) => {
+  const ran: string[][] = []
+  engine(on, ran, { isAllSame: true })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+  expect(ran.some(argv => argv[0] === 'open')).toBe(false)
+})
+
+test('人が見ていないセッションでは、変わった画像があってもブラウザーを開かない', async ($, on) => {
+  const ran: string[][] = []
+  engine(on, ran)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+  expect(ran.some(argv => argv[0] === 'open')).toBe(false)
 })

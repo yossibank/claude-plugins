@@ -26,8 +26,11 @@ export const register: Register = (on, options) => {
   const dirs = folders(options)
   const { pattern, isBroken } = watcher(options)
   let isTold = false
+  // 人がターミナルで見ているセッションの時だけ、ブラウザーを開く
+  let isWatched = false
 
   on('session.start', async ($, e, next) => {
+    isWatched = e.isInteractive === true && e.surface === 'terminal'
     await $.command.register({ name: 'snapshots', description: 'スナップショットの画廊を開く。引数にセットの名前を渡せる' })
     return next(e)
   })
@@ -108,7 +111,9 @@ export const register: Register = (on, options) => {
     })
     if (drawn !== null && drawn.cases.length > 0) {
       await update($, gallery, () => drawn)
-      await writePage($, drawn)
+      const isWritten = await writePage($, drawn)
+      // 変わった画像か新しい画像がある時だけ、一覧をブラウザーで開く
+      if (isWatched && isWritten && drawn.cases.some(one => one.status !== 'same')) await succeeded($, ['open', drawn.page], 'ブラウザーで開くこと')
       void open($).catch(report($, '画廊の表示'))
     }
     return ran
