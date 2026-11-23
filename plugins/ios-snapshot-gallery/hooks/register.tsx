@@ -3,24 +3,32 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Gallery } from '../types'
 
-import { CHROME_ROWS, DOT, folders, MIN_IMAGE_ROWS, PANE, REMOVED, STATUS, TITLE, watcher } from './config'
+import { folders, watcher } from './config'
 import { collect, discard, pngs, report, succeeded } from './files'
 import { isSetName, join, moveBase } from './path'
 import { page } from './page'
-import { cellWidth, detail, fit, label, short, shown, stamp } from './view'
 
 // shape の番号は、保存する値の形の版。形を変えた時に上げると、前の版の値は読まれず初めの値に戻る
 const gallery = atom({ plugin: 'ios-snapshot-gallery', key: 'gallery' } as const, null, {
-  shape: 'gallery-5',
+  shape: 'gallery-6',
 })
 
-const open = ($: EngineInterface) => $.ui.open({ id: PANE, title: TITLE })
-
-// 一覧のページを書き直す。書けなくても pane はそのまま出す
+// 一覧のページを書き直す。書けなかったら toast で知らせる
 const writePage = ($: EngineInterface, state: Gallery) => $.fs.write(state.page, page(state)).then(() => true, (error: unknown) => {
   report($, '一覧のページの書き込み')(error)
   return false
 })
+
+// 一覧のページを書いて、ブラウザーで開く
+const openPage = async ($: EngineInterface, state: Gallery) => (await writePage($, state)) && (await succeeded($, ['open', state.page], 'ブラウザーで開くこと'))
+
+// 描き終えた時の toast の 1 行。数が 0 のものは出さない
+export const summary = (state: Gallery, isOpened: boolean) => {
+  const count = (status: string) => state.cases.filter(one => one.status === status).length
+  const parts = [['変更', count('changed')], ['新規', count('added')], ['同じ', count('same')], ['消えた', state.removed.length]] as const
+  const counts = parts.filter(([, n]) => n > 0).map(([word, n]) => `${word} ${n}`).join('・')
+  return `📸 ${state.set}：${counts}。${isOpened ? '一覧をブラウザーで開きました' : '/snapshots で一覧を開けます'}`
+}
 
 export const register: Register = (on, options) => {
   const dirs = folders(options)
@@ -31,7 +39,7 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     isWatched = e.isInteractive === true && e.surface === 'terminal'
-    await $.command.register({ name: 'snapshots', description: 'スナップショットの画廊を開く。引数にセットの名前を渡せる' })
+    await $.command.register({ name: 'snapshots', description: 'スナップショットの一覧をブラウザーで開く。引数にセットの名前を渡せる' })
     return next(e)
   })
 
@@ -42,12 +50,10 @@ export const register: Register = (on, options) => {
       const found = await collect($, await $.session.cwd(), set, dirs)
       if (found.cases.length === 0) return { text: `${set} の画像がありません` }
       await update($, gallery, () => found)
-      await writePage($, found)
     }
     const state = await read($, gallery)
     if (state === null) return { text: 'まだ描いたスナップショットがありません。/snapshots <セット> で開けます。' }
-    await open($)
-    return { text: `${state.set} のスナップショットを開きました。` }
+    return { text: (await openPage($, state)) ? `${state.set} の一覧をブラウザーで開きました。` : `${state.set} の一覧を開けませんでした。` }
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
@@ -111,143 +117,10 @@ export const register: Register = (on, options) => {
     })
     if (drawn !== null && drawn.cases.length > 0) {
       await update($, gallery, () => drawn)
-      const isWritten = await writePage($, drawn)
-      // 変わった画像か新しい画像がある時だけ、一覧をブラウザーで開く
-      if (isWatched && isWritten && drawn.cases.some(one => one.status !== 'same')) await succeeded($, ['open', drawn.page], 'ブラウザーで開くこと')
-      void open($).catch(report($, '画廊の表示'))
+      // 人が見ていて、変わった画像か新しい画像がある時だけ、一覧をブラウザーで開く
+      const isOpened = isWatched && drawn.cases.some(one => one.status !== 'same') ? await openPage($, drawn) : await writePage($, drawn).then(() => false)
+      $.ui.toast(summary(drawn, isOpened))
     }
     return ran
-  })
-
-  on('ui.focus', { requestId: PANE }, ($, e, next) => (e.origin.kind === 'person' && e.element !== undefined ? {} : next(e)))
-
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const elements = $.ui.resolve(e)
-    const { Box, Text, Button } = elements
-    const Image = 'Image' in elements ? elements.Image : undefined
-    const state = await read($, gallery)
-
-    if (state === null) return <Text dimColor>まだ描いたスナップショットがありません。</Text>
-
-    const list = shown(state)
-    const current = list[Math.min(state.index, list.length - 1)]
-    const count = (status: keyof typeof STATUS) => state.cases.filter(one => one.status === status).length
-    const select = (to: number) => update($, gallery, old => (old === null ? old : { ...old, index: Math.max(0, Math.min(to, shown(old).length - 1)) }))
-    const position = current === undefined ? 0 : list.indexOf(current)
-    const previous = list[position - 1]
-    const following = list[position + 1]
-
-    const half = Math.floor((e.props.bodyColumns - 1) / 2)
-    const size = current === undefined ? { columns: half - 2, rows: MIN_IMAGE_ROWS } : fit(current, Math.max(8, half - 2), e.props.scroll.bodyRows - CHROME_ROWS - (state.removed.length > 0 ? 1 : 0))
-    const line = (rows: number) => Array.from({ length: rows }, () => '│').join('\n')
-
-    const picture = (path: string | undefined, ms: number | undefined, key: string, title: string, titleWidth: number, isAfter: boolean) => (
-      <Box flexDirection="column">
-        <Text>
-          <Text dimColor>╭─ </Text>
-          <Text bold={isAfter} dimColor={!isAfter}>{key}</Text>
-          {isAfter && current !== undefined && <Text color={STATUS[current.status].color}>{title}</Text>}
-          <Text dimColor> {'─'.repeat(Math.max(0, size.columns - 3 - titleWidth))}╮</Text>
-        </Text>
-        <Box flexDirection="row">
-          <Text dimColor>{line(size.rows)}</Text>
-          {path === undefined ? (
-            <Box width={size.columns} height={size.rows} justifyContent="center" alignItems="center">
-              <Text dimColor>前の画像なし</Text>
-            </Box>
-          ) : Image === undefined ? (
-            <Box width={size.columns} height={size.rows}>
-              <Text dimColor>{path}</Text>
-            </Box>
-          ) : (
-            <Image key={key} source={{ file: path, format: 'png', generation: ms === undefined ? undefined : Math.round(ms) }} columns={size.columns} rows={size.rows} alt={key} />
-          )}
-          <Text dimColor>{line(size.rows)}</Text>
-        </Box>
-        <Text dimColor>{`╰─ ${stamp(ms)} ${'─'.repeat(Math.max(0, size.columns - 3 - cellWidth(stamp(ms))))}╯`}</Text>
-      </Box>
-    )
-    const about = current === undefined ? undefined : detail(current)
-    // 1 枚を 1 文字にした並び。pane に収まらない枚数の時は出さない
-    const dots = list.length <= e.props.bodyColumns - 6 ? list : []
-    const afterTitle = current === undefined ? '' : ` · ${STATUS[current.status].mark} ${STATUS[current.status].word}`
-
-    return (
-      <Box flexDirection="column">
-        <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
-          <Box flexDirection="row" justifyContent="space-between">
-            <Text>
-              📸 <Text bold>{state.set}</Text>
-            </Text>
-            <Text dimColor>{list.length === 0 ? '0 / 0' : `${position + 1} / ${list.length}`}</Text>
-          </Box>
-          <Text>
-            {(['changed', 'same', 'added'] as const).map(status => (
-              <Text key={status}>
-                {STATUS[status].mark} <Text dimColor>{STATUS[status].word}</Text> {count(status)}{'   '}
-              </Text>
-            ))}
-            {state.removed.length > 0 && (
-              <Text>
-                {REMOVED.mark} <Text dimColor>{REMOVED.word}</Text> {state.removed.length}
-              </Text>
-            )}
-          </Text>
-          <Text>
-            {dots.map((one, at) => (
-              <Text key={one.name} color={STATUS[one.status].color} inverse={at === position} bold={at === position}>
-                {DOT[one.status]}
-              </Text>
-            ))}
-            {dots.length === 0 && <Text dimColor>{list.length} 枚</Text>}
-          </Text>
-        </Box>
-        {state.removed.length > 0 && (
-          <Text wrap="truncate-end">
-            {'  '}
-            {REMOVED.mark} <Text dimColor>後に無い画像：</Text>
-            {state.removed.map(name => (name.startsWith(`${state.set}-`) ? name.slice(state.set.length + 1) : name)).join('、')}
-          </Text>
-        )}
-        <Text>
-          {'  '}
-          {previous !== undefined && <Text dimColor>‹ {short(previous, state.set)}  </Text>}
-          {current !== undefined && (
-            <Text bold inverse>
-              {' '}{label(current, state.set)}{' '}
-            </Text>
-          )}
-          {following !== undefined && <Text dimColor>  {short(following, state.set)} ›</Text>}
-          {list.length === 0 && <Text dimColor>変わったものはありません</Text>}
-        </Text>
-        <Text> </Text>
-        <Box flexDirection="row" gap={1}>
-          {current !== undefined && picture(current.before, current.beforeMs, '前', '', 2, false)}
-          {current !== undefined && picture(current.after, current.afterMs, '後', afterTitle, 2 + cellWidth(afterTitle), true)}
-        </Box>
-        {about !== undefined && (
-          <Text>
-            {'  '}
-            <Text dimColor>大きさ</Text> {about.size}
-            {about.resized !== '' && <Text color="warning">（{about.resized}）</Text>}
-            <Text dimColor> · ファイル</Text> {about.bytes}
-            {about.gap !== '' && <Text color="warning">（{about.gap}）</Text>}
-          </Text>
-        )}
-        <Text> </Text>
-        <Box flexDirection="row" gap={2}>
-          <Button key="previous" plain hotkey="j" onPress={() => void select(position - 1).catch(report($, '前へ移ること'))}>‹ 前</Button>
-          <Button key="next" plain hotkey="k" onPress={() => void select(position + 1).catch(report($, '次へ移ること'))}>次 ›</Button>
-          <Button key="changed-only" plain hotkey="c" onPress={() => void update($, gallery, old => (old === null ? old : { ...old, isChangedOnly: !old.isChangedOnly, index: 0 })).catch(report($, '絞り込みの切り替え'))}>
-            {state.isChangedOnly ? 'すべて' : '変更だけ'}
-          </Button>
-          <Button key="browser" plain hotkey="b" onPress={() => void writePage($, state).then(isWritten => isWritten && succeeded($, ['open', state.page], 'ブラウザーで開くこと'))}>ブラウザー</Button>
-          {current !== undefined && (
-            <Button key="finder" plain hotkey="o" onPress={() => void succeeded($, ['open', '-R', current.after], 'Finder で開くこと')}>Finder</Button>
-          )}
-          <Text dimColor>↑↓ スクロール</Text>
-        </Box>
-      </Box>
-    )
   })
 }

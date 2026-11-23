@@ -9,12 +9,6 @@ export type SnapshotCase = {
   height: number
   afterMs: number
   beforeMs?: number
-  // ファイルの大きさ（バイト）
-  bytes: number
-  beforeBytes?: number
-  // 前の画像の大きさ（px）。取れなかった時は無い
-  beforeWidth?: number
-  beforeHeight?: number
   // index.jsonl に書かれた、人が読む画面の名前と描き方。無い時は出さない
   title?: string
   variant?: string
@@ -29,7 +23,7 @@ export type Gallery = {
   removed: string[]
   // ブラウザーで開く一覧のページ
   page: string
-  index: number
+  // 変わった画像があれば、一覧を初めから変更と新規に絞る
   isChangedOnly: boolean
 }
 

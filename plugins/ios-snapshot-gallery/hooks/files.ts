@@ -99,7 +99,8 @@ export async function collect($: EngineInterface, root: string, set: string, dir
   const afterFiles = after.map(entry => join(afterDir, entry.name))
   const beforeFiles = [...before.keys()].map(name => join(beforeDir, name))
   const hash = await hashes($, [...afterFiles, ...beforeFiles])
-  const size = await sizes($, [...afterFiles, ...beforeFiles])
+  // 大きさは、ページで縦横の比を出す後の画像の分だけを取る
+  const size = await sizes($, afterFiles)
   const named = await titles($, afterDir)
   // 同じ回に描いた画像で、ハッシュが同じものは先の 1 枚にまとめる
   const firstOfHash = new Map<string, string>()
@@ -113,7 +114,6 @@ export async function collect($: EngineInterface, root: string, set: string, dir
       const afterHash = hash.get(afterPath)
       const status = beforePath === undefined ? 'added' : afterHash !== undefined && afterHash === hash.get(beforePath) ? 'same' : 'changed'
       const { width, height } = size.get(afterPath) ?? { width: 1, height: 1 }
-      const beforeSize = beforePath === undefined ? undefined : size.get(beforePath)
       const name = entry.name.replace(/\.png$/, '')
       const found = afterHash === undefined ? undefined : firstOfHash.get(afterHash)
       if (afterHash !== undefined && found === undefined) firstOfHash.set(afterHash, name)
@@ -128,10 +128,6 @@ export async function collect($: EngineInterface, root: string, set: string, dir
         height,
         afterMs: entry.mtimeMs,
         beforeMs: old?.mtimeMs,
-        bytes: entry.size,
-        beforeBytes: old?.size,
-        beforeWidth: beforeSize?.width,
-        beforeHeight: beforeSize?.height,
         title: named.get(entry.name)?.title,
         variant: named.get(entry.name)?.variant,
         sameAs,
@@ -143,6 +139,5 @@ export async function collect($: EngineInterface, root: string, set: string, dir
     .filter(name => !drawn.has(name))
     .sort((a, b) => a.localeCompare(b))
     .map(name => name.replace(/\.png$/, ''))
-  // 変わったものがあれば、初めから変わったものだけを出す
-  return { set, cases, removed, page: join(afterDir, 'index.html'), index: 0, isChangedOnly: hasChange }
+  return { set, cases, removed, page: join(afterDir, 'index.html'), isChangedOnly: hasChange }
 }
