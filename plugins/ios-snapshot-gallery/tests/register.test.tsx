@@ -1,5 +1,6 @@
 import { expect, test, type TestBody } from 'claude-code/testing'
 
+import { page } from '../hooks/page'
 import { bytesText, detail } from '../hooks/view'
 
 type On = Parameters<TestBody>[1]
@@ -12,7 +13,7 @@ const BEFORE = DEFAULT_BEFORE
 
 const file = (name: string, mtimeMs: number) => ({ name, kind: 'file' as const, size: 1, mtimeMs, isLink: false })
 
-type Setup = { root?: string; after?: string; before?: string; failure?: Record<string, unknown>; exit?: Record<string, number>; missing?: string[]; extra?: string[]; toasts?: string[]; afterMs?: number; beforeMs?: number; isOpenBroken?: boolean; isSipsMissing?: boolean; gone?: string[] }
+type Setup = { root?: string; after?: string; before?: string; failure?: Record<string, unknown>; exit?: Record<string, number>; missing?: string[]; extra?: string[]; toasts?: string[]; afterMs?: number; beforeMs?: number; isOpenBroken?: boolean; isSipsMissing?: boolean; gone?: string[]; index?: string; writes?: Map<string, string>; hashes?: Record<string, string> }
 
 const engine = (on: On, ran: string[][], setup: Setup = {}) => {
   const root = setup.root ?? ROOT
@@ -30,6 +31,7 @@ const engine = (on: On, ran: string[][], setup: Setup = {}) => {
     [`${AFTER}/review-list-narrow.png`]: 'l1',
     [`${BEFORE}/review-list-narrow.png`]: 'l1',
     [`${AFTER}/review-new-narrow.png`]: 'n1',
+    ...setup.hashes,
   }
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: root }))
@@ -42,7 +44,13 @@ const engine = (on: On, ran: string[][], setup: Setup = {}) => {
     if (setup.isOpenBroken === true) throw new Error('開けない')
     return { value: { isPlaced: true } }
   })
-  on('fs.exists', (_, e) => ({ value: !setup.missing?.includes(e.path) && (dirs.has(e.path) || (setup.extra?.includes(e.path) ?? false)) }))
+  const index = `${AFTER}/index.jsonl`
+  on('fs.exists', (_, e) => ({ value: !setup.missing?.includes(e.path) && (dirs.has(e.path) || (setup.extra?.includes(e.path) ?? false) || (e.path === index && setup.index !== undefined)) }))
+  on('fs.read', (_, e) => ({ value: e.path === index ? (setup.index ?? '') : '' }))
+  on('fs.write', (_, e) => {
+    setup.writes?.set(e.path, e.text)
+    return { value: undefined }
+  })
   on('fs.list', (_, e) => ({ value: dirs.get(e.path ?? '') ?? [] }))
   on('tool.call', () => ({ result: { stdout: '', stderr: '' }, text: '', ...setup.failure }))
   on('process.run', (_, e) => {
@@ -81,9 +89,9 @@ test('描く前に古い PNG を取っておき、描いた後に前と後を並
   expect(ran).toContainEqual(['mv', `${BEFORE}.pending`, BEFORE])
 
   const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /^1 \/ 3$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^1 \/ 2$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /🟡 変更 1.*⚪ 同じ 1.*🟢 新規 1/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^\s+ balance-narrow   list-narrow ›$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^\s+ balance-narrow   new-narrow ›$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /╭─ 後 · 🟡 変更 ─+╮/ })).toBeDefined()
   expect((await ui.find({ type: 'Image', key: '前' }))?.props).toMatchObject({ source: { file: `${BEFORE}/review-balance-narrow.png`, format: 'png' } })
   expect((await ui.find({ type: 'Image', key: '後' }))?.props).toMatchObject({ source: { file: `${AFTER}/review-balance-narrow.png`, format: 'png' } })
@@ -97,8 +105,8 @@ test('k で次の場合に移る', async ($, on) => {
 
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'next' })
-  expect(await ui.find({ type: 'Text', text: /‹ balance-narrow\s+ list-narrow \s+new-narrow ›/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^2 \/ 3$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /‹ balance-narrow\s+ new-narrow $/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^2 \/ 2$/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -355,22 +363,21 @@ test('前と後の下に、画像を描いた日時を出す。前の画像が�
   expect(await ui.find({ type: 'Text', text: /^╰─ 01\/02 23:45 ─+╯$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^╰─ 11\/07 09:05 ─+╯$/ })).toBeDefined()
   await ui.press({ key: 'next' })
-  await ui.press({ key: 'next' })
   expect(await ui.find({ type: 'Text', text: /^╰─ なし ─+╯$/ })).toBeDefined()
   await ui.unmount()
 })
 
-test('c で変更のあるものだけに絞り、もう一度でもどす', async ($, on) => {
+test('初めは変更のあるものだけを出し、c で全部とを切り替える', async ($, on) => {
   await start({})($, on, [])
   await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
 
   const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /^1 \/ 3$/ })).toBeDefined()
-  await ui.press({ key: 'changed-only' })
   expect(await ui.find({ type: 'Text', text: /^1 \/ 2$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /list-narrow/ })).toBeUndefined()
   await ui.press({ key: 'changed-only' })
   expect(await ui.find({ type: 'Text', text: /^1 \/ 3$/ })).toBeDefined()
+  await ui.press({ key: 'changed-only' })
+  expect(await ui.find({ type: 'Text', text: /^1 \/ 2$/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -402,7 +409,7 @@ test('画廊を開けなかったら、toast で知らせる', async ($, on) => 
   await start({ isOpenBroken: true, toasts })($, on, [])
 
   await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
-  for (let i = 0; i < 20; i += 1) await Promise.resolve()
+  await new Promise(resolve => setTimeout(resolve, 0))
 
   expect(toasts).toHaveLength(1)
   expect(toasts[0]).toMatch(/^ios-snapshot-gallery: 画廊の表示に失敗しました: /)
@@ -425,7 +432,7 @@ test('見出しに 1 枚 1 文字の並びを、画像の下に大きさとフ�
   await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
 
   const ui = await $.ui.mount(PANE)
-  expect(await ui.find({ type: 'Text', text: /^●·\+$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^●\+$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /大きさ 640×960 px · ファイル 1 B$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /🔴/ })).toBeUndefined()
   await ui.unmount()
@@ -449,4 +456,66 @@ test('大きさとファイルの大きさは、前と違う時だけ前の値�
   expect(detail(one)).toEqual({ size: '640×960 px', resized: '', bytes: '4 KB', gap: '' })
   expect(detail({ ...one, before: '/b.png', beforeBytes: 1024, beforeWidth: 640, beforeHeight: 900 })).toEqual({ size: '640×960 px', resized: '前は 640×900', bytes: '4 KB', gap: '+3 KB' })
   expect(detail({ ...one, before: '/b.png', beforeBytes: 8192, beforeWidth: 640, beforeHeight: 960 })).toEqual({ size: '640×960 px', resized: '', bytes: '4 KB', gap: '−4 KB' })
+})
+
+const INDEX = [
+  JSON.stringify({ file: 'review-balance-narrow.png', title: '振り返り › 残高', variant: '幅 320・ダーク' }),
+  JSON.stringify({ file: 'review-new-narrow.png', title: '振り返り › 新しい月', variant: '幅 320・ダーク' }),
+  '壊れた行',
+].join('\n')
+
+test('index.jsonl があれば、ファイル名の代わりに画面の名前を出す。前と次は最後の段だけ', async ($, on) => {
+  engine(on, [], { index: INDEX })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: /^\s+ 振り返り › 残高（幅 320・ダーク）   新しい月（幅 320・ダーク） ›$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('描いたら一覧のページを書き、b でブラウザーで開く', async ($, on) => {
+  const ran: string[][] = []
+  const writes = new Map<string, string>()
+  engine(on, ran, { index: INDEX, writes })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+
+  const html = writes.get(`${AFTER}/index.html`) ?? ''
+  expect(html).toContain('振り返り › 残高')
+  expect(html).toContain(`file://${AFTER}/review-balance-narrow.png`)
+  expect(html).toContain(`file://${BEFORE}/review-balance-narrow.png`)
+  expect(html).toMatch(/id="changed" checked/)
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'browser' })
+  await new Promise(resolve => setTimeout(resolve, 0))
+  expect(ran).toContainEqual(['open', `${AFTER}/index.html`])
+  await ui.unmount()
+})
+
+test('一覧のページは、同じ回の同じ見た目を先の 1 枚にまとめ、名前を逃がす', () => {
+  const one = { name: 'set-a-light', after: '/o/set-a-light.png', status: 'same', width: 640, height: 960, afterMs: 2, bytes: 1, title: '<設定>', variant: 'ライト' } as const
+  const html = page({ set: 'set', cases: [one, { ...one, name: 'set-a-dark', after: '/o/set-a-dark.png', variant: 'ダーク', sameAs: 'set-a-light' }], removed: [], page: '/o/index.html', index: 0, isChangedOnly: false })
+  expect(html).toContain('&#60;設定&#62;（ライト） と同じ見た目')
+  expect(html).toContain('data-dup="1"')
+  expect(html).not.toContain('<設定>')
+  expect(html).not.toMatch(/id="changed" checked/)
+})
+
+test('変わった画像は、先の画像と同じ見た目でもたたまない', async ($, on) => {
+  const writes = new Map<string, string>()
+  // 変更の balance と新規の new を、同じの list と同じ見た目にする
+  engine(on, [], { writes, hashes: { [`${AFTER}/review-balance-narrow.png`]: 'l1', [`${AFTER}/review-new-narrow.png`]: 'l1' } })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+  const html = writes.get(`${AFTER}/index.html`) ?? ''
+  expect(html).toMatch(/data-status="changed" data-dup="0" data-name="review-balance-narrow"/)
+  expect(html).toMatch(/data-status="added" data-dup="0" data-name="review-new-narrow"/)
+})
+
+test('一覧のページは、前の画像が無い新規の画面も差分の見せ方で後の画像を出す', () => {
+  const one = { name: 'set-a', after: '/o/set-a.png', status: 'added', width: 640, height: 960, afterMs: 2, bytes: 1 } as const
+  const html = page({ set: 'set', cases: [one], removed: [], page: '/o/index.html', index: 0, isChangedOnly: true })
+  expect(html).toContain('<div class="diff"><img src="file:///o/set-a.png" alt="後"></div>')
 })

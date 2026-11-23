@@ -12,7 +12,7 @@
 | [git-pr-browser](plugins/git-pr-browser/README.md) | `gh pr create` で作った PR のページを、[terminal-browser](https://github.com/zenbu-labs/terminal-browser) で右に開く。今のブランチの PR の CI・レビュー・未解決のコメントを入力欄の上に出し、変わり目をトーストで知らせる |
 | [ios-build-progress](plugins/ios-build-progress/README.md) | ビルドのコマンド（`xcodebuild`・`make build`）の間、進みの棒・今のターゲットと段・警告とエラーを入力欄の上に出し、終わったらトーストで知らせる。XcodeBuildMCP のビルドのツールも見張る。コマンドの出力を `.build/build.log` に残しておく |
 | [ios-simulator-dashboard](plugins/ios-simulator-dashboard/README.md) | 起動中の iOS シミュレータ・アプリの状態と、この会話でシミュレータにした操作の履歴と回数を、右の pane に出す。`/simulator` で開き、`r` で更新、`d` で外観を切り替える |
-| [ios-snapshot-gallery](plugins/ios-snapshot-gallery/README.md) | `make snapshot` で描いた PNG を、直す前と後で左右に並べて pane に出す。`/snapshots <セット>` で開き、`j` と `k` で前と次に移る |
+| [ios-snapshot-gallery](plugins/ios-snapshot-gallery/README.md) | `make snapshot` で描いた PNG を、直す前と後で左右に並べて pane に出す。`/snapshots <セット>` で開き、`j` と `k` で前と次に移る。`b` で、拡大と差分を見られる一覧をブラウザーで開く |
 | [ios-test-progress](plugins/ios-test-progress/README.md) | テストのコマンドの間、進みの棒と落ちたテストとその理由を入力欄の上に出し、終わったらトーストで知らせる。前の回から直った数と、遅いテストも出す。コマンドの出力を `.build/test.log` に残しておく |
 | [session-dashboard](plugins/session-dashboard/README.md) | モデル・バージョン・費用・リポジトリ・利用の上限・文脈の埋まり具合・セッションの経過を右の pane に出す。閉じている間は入力欄の上に出す |
 | [session-handoff](plugins/session-handoff/README.md) | 文脈が埋まってきたら、右のペインで引き継ぎを勧める。引き継ぎメモを `.claude/handoff.md` に書き、`/clear` した新しい会話の入力欄に入れる |
