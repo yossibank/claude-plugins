@@ -28,7 +28,7 @@
     {
       "name": "ios-snapshot-gallery",
       "source": "./plugins/ios-snapshot-gallery",
-      "description": "make snapshot で描いた PNG を、直す前と後で左右に並べて pane に出す"
+      "description": "make snapshot で描いた PNG を、直す前と後で並べたページにしてブラウザーで開く"
     },
     {
       "name": "ios-test-progress",

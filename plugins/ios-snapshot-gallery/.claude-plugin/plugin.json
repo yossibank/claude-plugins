@@ -1,7 +1,7 @@
 {
   "name": "ios-snapshot-gallery",
-  "version": "0.2.2",
-  "description": "make snapshot で描いた PNG を、直す前と後で左右に並べて pane に出す",
+  "version": "0.3.0",
+  "description": "make snapshot で描いた PNG を、直す前と後で並べたページにしてブラウザーで開く",
   "author": {
     "name": "yossibank"
   },
