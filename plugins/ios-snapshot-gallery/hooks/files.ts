@@ -115,8 +115,10 @@ export async function collect($: EngineInterface, root: string, set: string, dir
       const { width, height } = size.get(afterPath) ?? { width: 1, height: 1 }
       const beforeSize = beforePath === undefined ? undefined : size.get(beforePath)
       const name = entry.name.replace(/\.png$/, '')
-      const sameAs = afterHash === undefined ? undefined : firstOfHash.get(afterHash)
-      if (afterHash !== undefined && sameAs === undefined) firstOfHash.set(afterHash, name)
+      const found = afterHash === undefined ? undefined : firstOfHash.get(afterHash)
+      if (afterHash !== undefined && found === undefined) firstOfHash.set(afterHash, name)
+      // 変わった画像はたたまない。たたむと、変わったものが一覧から見えなくなる
+      const sameAs = status === 'same' ? found : undefined
       return {
         name,
         after: afterPath,

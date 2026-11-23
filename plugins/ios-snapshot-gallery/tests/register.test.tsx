@@ -13,7 +13,7 @@ const BEFORE = DEFAULT_BEFORE
 
 const file = (name: string, mtimeMs: number) => ({ name, kind: 'file' as const, size: 1, mtimeMs, isLink: false })
 
-type Setup = { root?: string; after?: string; before?: string; failure?: Record<string, unknown>; exit?: Record<string, number>; missing?: string[]; extra?: string[]; toasts?: string[]; afterMs?: number; beforeMs?: number; isOpenBroken?: boolean; isSipsMissing?: boolean; gone?: string[]; index?: string; writes?: Map<string, string> }
+type Setup = { root?: string; after?: string; before?: string; failure?: Record<string, unknown>; exit?: Record<string, number>; missing?: string[]; extra?: string[]; toasts?: string[]; afterMs?: number; beforeMs?: number; isOpenBroken?: boolean; isSipsMissing?: boolean; gone?: string[]; index?: string; writes?: Map<string, string>; hashes?: Record<string, string> }
 
 const engine = (on: On, ran: string[][], setup: Setup = {}) => {
   const root = setup.root ?? ROOT
@@ -31,6 +31,7 @@ const engine = (on: On, ran: string[][], setup: Setup = {}) => {
     [`${AFTER}/review-list-narrow.png`]: 'l1',
     [`${BEFORE}/review-list-narrow.png`]: 'l1',
     [`${AFTER}/review-new-narrow.png`]: 'n1',
+    ...setup.hashes,
   }
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: root }))
@@ -500,4 +501,21 @@ test('一覧のページは、同じ回の同じ見た目を先の 1 枚にま�
   expect(html).toContain('data-dup="1"')
   expect(html).not.toContain('<設定>')
   expect(html).not.toMatch(/id="changed" checked/)
+})
+
+test('変わった画像は、先の画像と同じ見た目でもたたまない', async ($, on) => {
+  const writes = new Map<string, string>()
+  // 変更の balance と新規の new を、同じの list と同じ見た目にする
+  engine(on, [], { writes, hashes: { [`${AFTER}/review-balance-narrow.png`]: 'l1', [`${AFTER}/review-new-narrow.png`]: 'l1' } })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+  const html = writes.get(`${AFTER}/index.html`) ?? ''
+  expect(html).toMatch(/data-status="changed" data-dup="0" data-name="review-balance-narrow"/)
+  expect(html).toMatch(/data-status="added" data-dup="0" data-name="review-new-narrow"/)
+})
+
+test('一覧のページは、前の画像が無い新規の画面も差分の見せ方で後の画像を出す', () => {
+  const one = { name: 'set-a', after: '/o/set-a.png', status: 'added', width: 640, height: 960, afterMs: 2, bytes: 1 } as const
+  const html = page({ set: 'set', cases: [one], removed: [], page: '/o/index.html', index: 0, isChangedOnly: true })
+  expect(html).toContain('<div class="diff"><img src="file:///o/set-a.png" alt="後"></div>')
 })

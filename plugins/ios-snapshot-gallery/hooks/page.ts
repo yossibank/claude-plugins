@@ -22,7 +22,7 @@ const card = (one: SnapshotCase, byName: Map<string, SnapshotCase>, set: string)
 <div class="pair" data-width="${one.width}" data-height="${one.height}">
 <div class="side"><b>前</b>${before}</div>
 <div class="side"><b>後</b><img class="after" src="${url(one.after)}" alt="後"></div>
-<div class="diff">${one.before === undefined ? '' : `<img src="${url(one.before)}" alt=""><img class="top" src="${url(one.after)}" alt="">`}</div>
+<div class="diff">${one.before === undefined ? `<img src="${url(one.after)}" alt="後">` : `<img src="${url(one.before)}" alt=""><img class="top" src="${url(one.after)}" alt="">`}</div>
 </div>
 ${sameText}
 </figure>`
@@ -68,6 +68,7 @@ figcaption { display: flex; justify-content: space-between; gap: 12px; margin-bo
 .pair img { display: block; width: var(--w); height: auto; }
 .none { width: var(--w); height: 120px; display: grid; place-items: center; border: 1px dashed var(--line); }
 .diff { display: none; position: relative; background: #000; filter: brightness(4); }
+.added .diff { filter: none; }
 .diff img.top { position: absolute; inset: 0; mix-blend-mode: difference; }
 body.mode-diff .side { display: none; }
 body.mode-diff .diff { display: block; }
