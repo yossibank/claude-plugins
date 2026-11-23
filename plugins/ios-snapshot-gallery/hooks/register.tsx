@@ -108,7 +108,9 @@ export const register: Register = (on, options) => {
     })
     if (drawn !== null && drawn.cases.length > 0) {
       await update($, gallery, () => drawn)
-      await writePage($, drawn)
+      const isWritten = await writePage($, drawn)
+      // 変わった画像か新しい画像がある時だけ、一覧をブラウザーで開く
+      if (isWritten && drawn.cases.some(one => one.status !== 'same')) await succeeded($, ['open', drawn.page], 'ブラウザーで開くこと')
       void open($).catch(report($, '画廊の表示'))
     }
     return ran
