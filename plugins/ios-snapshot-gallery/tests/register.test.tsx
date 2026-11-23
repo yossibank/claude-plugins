@@ -68,7 +68,7 @@ const engine = (on: On, ran: string[][], setup: Setup = {}) => {
   })
 }
 
-type Data = { isChangedOnly: boolean; removed: string[]; screens: { title: string; status: string; shots: { name: string; variant: string; status: string; after: string; before?: string; afterAt: string; beforeAt: string; sameAs?: string }[] }[] }
+type Data = { isChangedOnly: boolean; removed: string[]; screens: { title: string; status: string; shots: { name: string; variant: string; status: string; after: string; before?: string; afterMs: number; afterAt: string; beforeAt: string; sameAs?: string }[] }[] }
 
 // 書いた一覧のページから、埋め込んだデータを取り出す
 const dataOf = (writes: Map<string, string>, path = `${AFTER}/index.html`) => {
@@ -342,7 +342,8 @@ test('前と後に、画像を描いた日時を付ける。前の画像が無�
   await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
 
   const shots = dataOf(writes).screens.flatMap(screen => screen.shots)
-  expect(shots[0]).toMatchObject({ beforeAt: '01/02 23:45', afterAt: '11/07 09:05' })
+  // 確認済みの鍵に使うので、描いた時刻は分で丸めずにも渡す
+  expect(shots[0]).toMatchObject({ beforeAt: '01/02 23:45', afterAt: '11/07 09:05', afterMs: at(11, 7, 9, 5) })
   expect(shots[2]).toMatchObject({ beforeAt: 'なし' })
 })
 

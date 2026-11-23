@@ -13,7 +13,7 @@ const groupKey = (one: SnapshotCase, set: string) => one.title ?? label(one, set
 // 描き方の名前。無い時はファイル名の最後の段
 const variantOf = (one: SnapshotCase) => (one.variant !== undefined && one.variant !== '' ? one.variant : (one.name.split('-').at(-1) ?? one.name))
 
-type Shot = { name: string; variant: string; status: SnapshotCase['status']; after: string; before?: string; width: number; height: number; afterAt: string; beforeAt: string; sameAs?: string }
+type Shot = { name: string; variant: string; status: SnapshotCase['status']; after: string; before?: string; width: number; height: number; afterMs: number; afterAt: string; beforeAt: string; sameAs?: string }
 type Screen = { title: string; status: SnapshotCase['status']; shots: Shot[] }
 
 const worst = (shots: Shot[]) => (shots.some(one => one.status === 'changed') ? 'changed' : shots.some(one => one.status === 'added') ? 'added' : 'same')
@@ -33,6 +33,7 @@ export const screens = (state: Gallery): Screen[] => {
       before: one.before === undefined ? undefined : url(one.before),
       width: one.width,
       height: one.height,
+      afterMs: one.afterMs,
       afterAt: stamp(one.afterMs),
       beforeAt: stamp(one.beforeMs),
       sameAs: same === undefined ? undefined : `${groupKey(same, state.set)}（${variantOf(same)}）`,
@@ -160,7 +161,7 @@ main { padding: 28px 32px 160px; display: flex; flex-direction: column; gap: 24p
 .pic { height: var(--h); width: auto; display: block; border-radius: 14px; box-shadow: 0 0 0 1px var(--line), 0 12px 28px -14px rgba(0,0,0,.35); cursor: zoom-in; transition: transform .25s var(--ease), box-shadow .25s; background: #fff; }
 .pic:hover { transform: translateY(-3px) scale(1.01); box-shadow: 0 0 0 1px var(--line), 0 20px 40px -16px rgba(0,0,0,.45); }
 .box { position: relative; height: var(--h); border-radius: 14px; overflow: hidden; box-shadow: 0 0 0 1px var(--line), 0 12px 28px -14px rgba(0,0,0,.35); }
-.box img { display: block; height: 100%; width: 100%; }
+.box img { display: block; height: 100%; width: 100%; object-fit: contain; object-position: top center; }
 .compare { cursor: ew-resize; user-select: none; touch-action: none; }
 .compare img { pointer-events: none; }
 .compare .top { position: absolute; inset: 0; clip-path: inset(0 0 0 var(--cut, 50%)); }
@@ -257,7 +258,7 @@ main { padding: 28px 32px 160px; display: flex; flex-direction: column; gap: 24p
   var shots = screens.reduce(function (n, s) { return n + s.shots.length }, 0)
   var el = function (id) { return document.getElementById(id) }
   var esc = function (t) { return String(t).replace(/[&<>"']/g, function (c) { return '&#' + c.charCodeAt(0) + ';' }) }
-  var key = function (s) { return s.title + '|' + s.shots.map(function (x) { return x.afterAt }).join(',') }
+  var key = function (s) { return s.title + '|' + s.shots.map(function (x) { return x.afterMs }).join(',') }
   var parts = function (t) { return t.split(' › ') }
   var save = function () { try { localStorage.setItem(store, JSON.stringify({ done: done })) } catch (e) {} }
 
@@ -340,7 +341,7 @@ main { padding: 28px 32px 160px; display: flex; flex-direction: column; gap: 24p
     if (mode === 'diff') {
       return '<div class="frame">' + label('差分', '違う所だけが明るく光る', 'after') + '<div class="box diff"' + ar + open + '><div class="inner"><img src="' + shot.before + '"><img src="' + shot.after + '"></div></div></div>'
     }
-    return '<div class="frame">' + label('前', shot.beforeAt) + '<img class="pic" loading="lazy" src="' + shot.before + '"' + ar + open + '></div>' + arrow + '<div class="frame">' + label('後', shot.afterAt, 'after') + '<img class="pic" loading="lazy" src="' + shot.after + '"' + ar + open + '></div>'
+    return '<div class="frame">' + label('前', shot.beforeAt) + '<img class="pic" loading="lazy" src="' + shot.before + '"' + open + '></div>' + arrow + '<div class="frame">' + label('後', shot.afterAt, 'after') + '<img class="pic" loading="lazy" src="' + shot.after + '"' + ar + open + '></div>'
   }
 
   function card(i) {
@@ -429,8 +430,9 @@ main { padding: 28px 32px 160px; display: flex; flex-direction: column; gap: 24p
     var r = canvas.getBoundingClientRect()
     var hh = fitHeight(shot, view.mode, r.width - 64, r.height - 64 - 26)
     var size = 'height:' + hh + 'px;aspect-ratio:' + ratio(shot)
-    var img = function (src) { return '<img class="shotimg" src="' + src + '" style="' + size + '">' }
-    if (view.mode === 'side') box.innerHTML = '<div class="pane"><span>前 · ' + esc(shot.beforeAt) + '</span>' + img(shot.before) + '</div><span class="arrow">→</span><div class="pane"><span>後 · ' + esc(shot.afterAt) + '</span>' + img(shot.after) + '</div>'
+    // 前の画像は高さだけ揃え、元の縦横の比で描く
+    var img = function (src, isBefore) { return '<img class="shotimg" src="' + src + '" style="' + (isBefore ? 'height:' + hh + 'px' : size) + '">' }
+    if (view.mode === 'side') box.innerHTML = '<div class="pane"><span>前 · ' + esc(shot.beforeAt) + '</span>' + img(shot.before, true) + '</div><span class="arrow">→</span><div class="pane"><span>後 · ' + esc(shot.afterAt) + '</span>' + img(shot.after) + '</div>'
     else if (view.mode === 'slider') box.innerHTML = '<div class="pane"><span>つまみを左右に引いて比べる</span><div class="box compare shotimg" data-slide style="' + size + '"><img src="' + shot.before + '"><img class="top" src="' + shot.after + '"><span class="tag" style="left:10px">前</span><span class="tag" style="right:10px">後</span><div class="handle"></div></div></div>'
     else if (view.mode === 'diff') box.innerHTML = '<div class="pane"><span>違う所だけが明るく光る</span><div class="box diff shotimg" style="' + size + '"><div class="inner"><img src="' + shot.before + '"><img src="' + shot.after + '"></div></div></div>'
     else box.innerHTML = '<div class="pane"><span>後 · ' + esc(shot.afterAt) + '</span>' + img(shot.after) + '</div>'
