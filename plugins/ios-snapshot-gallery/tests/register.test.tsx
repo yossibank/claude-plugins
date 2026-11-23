@@ -536,3 +536,11 @@ test('全部同じなら、描いた後にブラウザーを開かない', async
   await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
   expect(ran.some(argv => argv[0] === 'open')).toBe(false)
 })
+
+test('人が見ていないセッションでは、変わった画像があってもブラウザーを開かない', async ($, on) => {
+  const ran: string[][] = []
+  engine(on, ran)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await $.tool.call({ tool: 'Bash', command: 'make snapshot SNAPSHOT=review' })
+  expect(ran.some(argv => argv[0] === 'open')).toBe(false)
+})
