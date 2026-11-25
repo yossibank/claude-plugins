@@ -9,7 +9,7 @@
 | プラグイン | できること |
 | --- | --- |
 | [agent-progress](plugins/agent-progress/README.md) | メインとサブエージェントが今していることを、動く Claude のアイコン付きのカードで右の pane に出す。作業の一覧の進みも出す |
-| [git-pr-browser](plugins/git-pr-browser/README.md) | `gh pr create` で作った PR のページを、[terminal-browser](https://github.com/zenbu-labs/terminal-browser) で右に開く。今のブランチの PR の CI・レビュー・未解決のコメントを入力欄の上に出し、変わり目をトーストで知らせる |
+| [git-pr-browser](plugins/git-pr-browser/README.md) | `gh pr create` で作った PR のページを、既定のブラウザで開く。今のブランチの PR の CI・レビュー・未解決のコメントを入力欄の上に出し、変わり目をトーストで知らせる |
 | [ios-build-progress](plugins/ios-build-progress/README.md) | ビルドのコマンド（`xcodebuild`・`make build`）の間、進みの棒・今のターゲットと段・警告とエラーを入力欄の上に出し、終わったらトーストで知らせる。XcodeBuildMCP のビルドのツールも見張る。コマンドの出力を `.build/build.log` に残しておく |
 | [ios-simulator-dashboard](plugins/ios-simulator-dashboard/README.md) | 起動中の iOS シミュレータ・アプリの状態と、この会話でシミュレータにした操作の履歴と回数を、右の pane に出す。`/simulator` で開き、`r` で更新、`d` で外観を切り替える |
 | [ios-snapshot-gallery](plugins/ios-snapshot-gallery/README.md) | `make snapshot` で描いた PNG を、直す前と後で並べたページにしてブラウザーで開き、数をトーストで知らせる。ページはクリックだけで、絞り込み・比べ方の切り替え・拡大ができる。`/snapshots <セット>` で開き直せる |
@@ -36,10 +36,9 @@ flowchart LR
 | Claude Code | 2.1.322 | プラグインの実行、`claude plugin validate`、`claude plugin test` |
 | TypeScript | 5.4 以上 | `make types` での型の検査 |
 | jq | 最新 | `make verify` の version と description の検査 |
-| terminal-browser | 最新 | git-pr-browser |
 | GitHub CLI（`gh`） | 最新 | git-pr-browser の PR の状態 |
 | Xcode | — | ios-simulator-dashboard の `xcrun simctl`、ios-build-progress が見張る `xcodebuild` |
-| macOS | — | ios-snapshot-gallery の `shasum`・`sips`・`open` |
+| macOS | — | git-pr-browser の `open`、ios-snapshot-gallery の `shasum`・`sips`・`open` |
 
 ## 🚀 入れ方
 
@@ -48,10 +47,6 @@ flowchart LR
 /plugin install <プラグイン>@yossibank
 /reload-plugins
 ```
-
-| プラグイン | 先に入れるもの |
-| --- | --- |
-| git-pr-browser | `brew install terminal-browser` |
 
 ## 📚 文書
 

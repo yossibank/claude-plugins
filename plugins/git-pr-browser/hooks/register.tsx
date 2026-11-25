@@ -11,30 +11,16 @@ const CREATE = new RegExp(['\\bgh', 'pr', 'create\\b'].join('\\s+'))
 // PR の状態が変わりうるコマンド。終わったら取り直す
 const TOUCHES = /\bgit\s+(push|switch|checkout)\b|\bgh\s+pr\s+(merge|ready|close|reopen|edit|review|checkout)\b/
 const PR_URL = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/g
-const NARROW_COLUMNS = 128
 const GH_TIMEOUT_MS = 10_000
 const SHOWN_FAILED = 3
 
 // shape の番号は、保存する値の形の版。形を変えた時に上げると、前の版の値は読まれず初めの値に戻る
 const pr = atom({ plugin: 'git-pr-browser', key: 'pr' } as const, null, { shape: 'pr-1' })
 
-let columns: number | undefined
 let poller: Timer | undefined
 // 走っている取り直しと、その間に来た頼み。頼みは捨てずに、終わった後にもう一度走らせる
 let running: Promise<void> | undefined
 let queued: { target?: string } | undefined
-
-// 開いているブラウザの key。今のターミナルのタブにあるものを先に選ぶ。無い時や読めない時は undefined
-const browserKey = (stdout: string): string | undefined => {
-  try {
-    const listed = JSON.parse(stdout) as { browsers?: { key?: unknown; inCurrentTab?: unknown }[] }
-    const browsers = (listed.browsers ?? []).filter(browser => typeof browser.key === 'string')
-    const chosen = browsers.find(browser => browser.inCurrentTab === true) ?? browsers[0]
-    return typeof chosen?.key === 'string' ? chosen.key : undefined
-  } catch {
-    return undefined
-  }
-}
 
 const pollMs = (options: Readonly<Record<string, unknown>>) => {
   const seconds = Number(options.pollSeconds)
@@ -99,22 +85,14 @@ const report = ($: EngineInterface) => (error: unknown) => {
 // $ を受け取る関数は、ファイルの一番上に置く。待たずに取り直し、失敗はトーストで知らせる
 const later = ($: EngineInterface, wait: number, target?: string) => void refresh($, wait, target).catch(report($))
 
-// ブラウザが開いていればタブを足し、無ければペインを分けて開く
+// 既定のブラウザで開く。失敗はトーストで知らせる
 const open = ($: EngineInterface, url: string) => {
-  const split = columns !== undefined && columns < NARROW_COLUMNS ? 'down' : 'right'
   void $.process
-    .run(['terminal-browser', 'ls', '--all', '--json'])
-    .then(({ exitCode, stdout }) => {
-      const key = exitCode === 0 ? browserKey(stdout) : undefined
-      const argv = key === undefined
-        ? ['terminal-browser', 'open', url, '--split', split]
-        : ['terminal-browser', 'new-tab', '--browser', key, url]
-      return $.process.run(argv)
-    })
+    .run(['open', url])
     .then(({ exitCode, stderr }) => {
       if (exitCode !== 0) $.ui.toast(`git-pr-browser: 開けませんでした: ${stderr.trim().slice(0, 80)}`)
     })
-    .catch(() => $.ui.toast('git-pr-browser: terminal-browser が見つかりません'))
+    .catch(() => $.ui.toast('git-pr-browser: open が見つかりません'))
 }
 
 export const register: Register = (on, options) => {
@@ -160,7 +138,6 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.surface === 'terminal' && e.viewport !== undefined) columns = e.viewport.columns
     const now = await read($, pr)
     if (now === null || now.state !== 'OPEN' || e.props.hasSurvey) return next(e)
 

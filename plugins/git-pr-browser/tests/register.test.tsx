@@ -8,8 +8,7 @@ const CREATE = ['gh', 'pr', 'create'].join(' ')
 type On = Parameters<TestBody>[1]
 
 // view は gh pr view の答え（null は PR なし）。threads は未解決のスレッドの答え。gh は gh に渡した引数の記録
-// browsers は terminal-browser ls --all --json の答え（省くとブラウザなし）
-type Opening = { exitCode?: number; stderr?: string; isMissing?: boolean; toasts?: string[]; view?: () => string | null; threads?: string; gh?: string[][]; browsers?: string }
+type Opening = { exitCode?: number; stderr?: string; isMissing?: boolean; toasts?: string[]; view?: () => string | null; threads?: string; gh?: string[][] }
 
 const setup = (on: On, text: string, opened: string[][], opening: Opening = {}) => {
   on('tool.call', () => ({ result: { stdout: text, stderr: '' }, text }))
@@ -24,10 +23,6 @@ const setup = (on: On, text: string, opened: string[][], opening: Opening = {}) 
       return { value: { exitCode: stdout === null ? 1 : 0, stdout: stdout ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     }
     if (opening.isMissing === true) throw new Error('not found')
-    if (e.argv[1] === 'ls') {
-      const stdout = opening.browsers ?? JSON.stringify({ self: null, browsers: [] })
-      return { value: { exitCode: opening.exitCode ?? 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-    }
     opened.push([...e.argv])
     return { value: { exitCode: opening.exitCode ?? 0, stdout: '', stderr: opening.stderr ?? '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
@@ -42,74 +37,14 @@ declare const setTimeout: (run: (value?: unknown) => void, ms: number) => unknow
 // 非同期の開く処理と、gh での取り直しが終わって、toast が出るまで待つ
 const settle = () => new Promise(resolve => setTimeout(resolve, 20))
 
-test('PR を作った URL を右に開く', async ($, on) => {
+test('PR を作った URL を既定のブラウザで開く', async ($, on) => {
   const opened: string[][] = []
   setup(on, `Creating pull request\n${URL}\n`, opened)
 
   await $.tool.call({ tool: 'Bash', command: `${CREATE} --base main --title t --body-file b.md` })
   await settle()
 
-  expect(opened).toEqual([['terminal-browser', 'open', URL, '--split', 'right']])
-})
-
-test('ブラウザが開いていれば、今のタブのブラウザにタブを足す', async ($, on) => {
-  const opened: string[][] = []
-  const browsers = JSON.stringify({
-    self: null,
-    browsers: [
-      { key: '100-1', inCurrentTab: false },
-      { key: '200-1', inCurrentTab: true },
-    ],
-  })
-  setup(on, `${URL}\n`, opened, { browsers })
-
-  await $.tool.call({ tool: 'Bash', command: `${CREATE} --title t` })
-  await settle()
-
-  expect(opened).toEqual([['terminal-browser', 'new-tab', '--browser', '200-1', URL]])
-})
-
-test('今のタブにブラウザが無ければ、最初のブラウザにタブを足す', async ($, on) => {
-  const opened: string[][] = []
-  const browsers = JSON.stringify({ self: null, browsers: [{ key: '100-1', inCurrentTab: false }] })
-  setup(on, `${URL}\n`, opened, { browsers })
-
-  await $.tool.call({ tool: 'Bash', command: `${CREATE} --title t` })
-  await settle()
-
-  expect(opened).toEqual([['terminal-browser', 'new-tab', '--browser', '100-1', URL]])
-})
-
-test('ブラウザの一覧が読めない時は、ペインを分けて開く', async ($, on) => {
-  const opened: string[][] = []
-  setup(on, `${URL}\n`, opened, { browsers: 'not json' })
-
-  await $.tool.call({ tool: 'Bash', command: `${CREATE} --title t` })
-  await settle()
-
-  expect(opened).toEqual([['terminal-browser', 'open', URL, '--split', 'right']])
-})
-
-test('会話が 128 列より狭い時は下に開く', async ($, on) => {
-  const opened: string[][] = []
-  setup(on, `${URL}\n`, opened)
-  on('ui.render', ($, e) => {
-    const { Text } = $.ui.resolve(e)
-    return <Text>engine</Text>
-  })
-
-  const ui = await $.ui.mount({
-    plugin: 'git-pr-browser',
-    surface: 'terminal',
-    component: 'AbovePrompt',
-    props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 10 }, view: {} },
-    viewport: { columns: 100, rows: 40 },
-  })
-  await ui.unmount()
-  await $.tool.call({ tool: 'Bash', command: `${CREATE} --title t` })
-  await settle()
-
-  expect(opened).toEqual([['terminal-browser', 'open', URL, '--split', 'down']])
+  expect(opened).toEqual([['open', URL]])
 })
 
 test('出力の最後の PR の URL を開く', async ($, on) => {
@@ -119,7 +54,7 @@ test('出力の最後の PR の URL を開く', async ($, on) => {
   await $.tool.call({ tool: 'Bash', command: `${CREATE} --title t` })
   await settle()
 
-  expect(opened).toEqual([['terminal-browser', 'open', URL, '--split', 'right']])
+  expect(opened).toEqual([['open', URL]])
 })
 
 test('ほかのコマンドの URL は開かない', async ($, on) => {
@@ -131,17 +66,17 @@ test('ほかのコマンドの URL は開かない', async ($, on) => {
   expect(opened).toEqual([])
 })
 
-test('terminal-browser が見つからない時は、toast で知らせる', async ($, on) => {
+test('open が見つからない時は、toast で知らせる', async ($, on) => {
   const toasts: string[] = []
   setup(on, `${URL}\n`, [], { isMissing: true, toasts })
 
   await $.tool.call({ tool: 'Bash', command: `${CREATE} --title t` })
   await settle()
 
-  expect(toasts).toEqual(['git-pr-browser: terminal-browser が見つかりません'])
+  expect(toasts).toEqual(['git-pr-browser: open が見つかりません'])
 })
 
-test('terminal-browser が失敗した時は、理由を toast で知らせる', async ($, on) => {
+test('open が失敗した時は、理由を toast で知らせる', async ($, on) => {
   const toasts: string[] = []
   setup(on, `${URL}\n`, [], { exitCode: 1, stderr: 'no pane\n', toasts })
 
@@ -296,7 +231,7 @@ test('/pr で状態を取り直し、ページを開く', async ($, on) => {
   await settle()
 
   expect(ran).toMatchObject({ text: 'PR #346 を開きました。' })
-  expect(opened).toEqual([['terminal-browser', 'open', URL, '--split', 'right']])
+  expect(opened).toEqual([['open', URL]])
 })
 
 test('取り直しの途中に来た /pr は、捨てずに終わりを待って答える', async ($, on) => {
