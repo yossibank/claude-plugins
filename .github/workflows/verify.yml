@@ -12,12 +12,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      # make verify の versions は origin/HEAD との merge-base を見る
       - run: git remote set-head origin --auto
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # README の実行環境と同じ版にそろえる
       - run: npm install -g @anthropic-ai/claude-code@2.1.322
       - run: make verify
       - run: make test
